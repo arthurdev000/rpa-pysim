@@ -119,14 +119,16 @@ class PageTable:
         return len(self.entries)
 
 
-class PhysicalMemory:
+class Memory:
     """
-    物理内存模拟器。
+    内存单元 - 物理内存模拟与页表管理。
 
     模拟一块连续的物理内存空间，支持：
     - 字节、半字（16位）、字（32位）读写
     - 内存区域权限设置
     - 地址边界检查
+
+    无页表时 PA = VA。
     """
 
     def __init__(self, size: int = 1024 * 1024):
@@ -322,14 +324,14 @@ class MemoryManager:
     无页表时，PA = VA。
     """
 
-    def __init__(self, physical_memory: Optional[PhysicalMemory] = None):
+    def __init__(self, physical_memory: Optional['Memory'] = None):
         """
         初始化内存管理器。
 
         Args:
             physical_memory: 物理内存实例，默认创建1MB内存
         """
-        self.physical_memory = physical_memory or PhysicalMemory(1024 * 1024)
+        self.physical_memory = physical_memory or Memory(1024 * 1024)
         self.page_tables: Dict[int, PageTable] = {}  # base_addr -> PageTable
         self.level_page_tables: Dict[int, int] = {}  # level_id -> page_table_base
 
