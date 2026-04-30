@@ -1,7 +1,7 @@
 """
-Instruction Emulator - Simplified instruction set for RPA demonstration
+ISADecoder - Simplified instruction set decoder for RPA demonstration
 
-简化的指令集模拟器，用于演示 RPA 的 descend/escalate 机制。
+简化的指令集解码器，用于演示 RPA 的 descend/escalate 机制。
 
 注意：这些指令是简化的示例指令，与真实架构指令相似但不完全相同。
 它们不是任何特定架构的标准指令集。
@@ -400,11 +400,11 @@ class Assembler:
         return Instruction(opcode=opcode)
 
 
-class Emulator:
+class ISADecoder:
     """
-    简化的指令集模拟器。
+    简化的指令集解码器。
 
-    注意：此模拟器使用简化的示例指令，与真实架构指令相似但不完全相同。
+    注意：此解码器使用简化的示例指令，与真实架构指令相似但不完全相同。
     它们不是任何特定架构的标准指令集。
     """
 
@@ -741,21 +741,23 @@ class Emulator:
 
 
 # 便捷函数
-def Asm(code: str, base_addr: int = 0, emulator: Optional[Emulator] = None) -> int:
+def Asm(code: str, base_addr: int = 0, decoder: Optional['ISADecoder'] = None) -> int:
     """
     汇编代码快捷函数。
 
     Args:
         code: 汇编代码
         base_addr: 基地址
-        emulator: 模拟器实例（可选）
+        decoder: 解码器实例（可选）
 
     Returns:
         结束地址
     """
-    if emulator:
-        return emulator.load_assembly(code, base_addr)
+    if decoder:
+        return decoder.load_assembly(code, base_addr)
     else:
         assembler = Assembler()
         instructions = assembler.assemble(code, base_addr)
         return base_addr + len(instructions) * 4
+
+
