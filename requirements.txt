@@ -1,0 +1,2 @@
+# RPA Simulator Dependencies
+pytest>=7.0.0
