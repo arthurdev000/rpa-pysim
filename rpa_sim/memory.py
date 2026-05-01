@@ -30,9 +30,10 @@ class PageTableEntry:
     """单个页表项"""
     virtual_page: int        # 虚拟页号
     physical_page: int       # 物理页号
-    readable: bool = True    # 可读
-    writable: bool = True    # 可写
-    executable: bool = True  # 可执行
+    r: bool = True           # 可读
+    w: bool = True           # 可写
+    x: bool = True           # 可执行
+    c: bool = False          # 硬件控制寄存器（必须用 sysop 访问）
 
 
 class PageTable:
@@ -51,7 +52,8 @@ class PageTable:
         self.entries: Dict[int, PageTableEntry] = {}
 
     def map(self, va: int, pa: int,
-            r: bool = True, w: bool = True, x: bool = True) -> None:
+            r: bool = True, w: bool = True, x: bool = True,
+            control: bool = False) -> None:
         """
         映射虚拟地址到物理地址。
 
@@ -59,15 +61,19 @@ class PageTable:
             va: 虚拟地址
             pa: 物理地址
             r, w, x: 读、写、执行权限
+            control: 是否为硬件控制寄存器区域
+                     control 区域必须用 sysop 指令访问，
+                     常规 ldr/str 会触发异常
         """
         vpn = va // self.page_size
         ppn = pa // self.page_size
         self.entries[vpn] = PageTableEntry(
             virtual_page=vpn,
             physical_page=ppn,
-            readable=r,
-            writable=w,
-            executable=x
+            r=r,
+            w=w,
+            x=x,
+            c=control
         )
 
     def unmap(self, va: int) -> bool:
@@ -101,18 +107,28 @@ class PageTable:
             return entry.physical_page * self.page_size + offset
         return None
 
-    def get_permissions(self, addr: int) -> Optional[Tuple[bool, bool, bool]]:
+    def get_permissions(self, addr: int) -> Optional[Tuple[bool, bool, bool, bool]]:
         """
         获取地址的权限。
 
         Returns:
-            (readable, writable, executable) 或 None
+            (r, w, x, c) 或 None
         """
         vpn = addr // self.page_size
         entry = self.entries.get(vpn)
         if entry:
-            return (entry.readable, entry.writable, entry.executable)
+            return (entry.r, entry.w, entry.x, entry.c)
         return None
+
+    def is_control(self, addr: int) -> bool:
+        """
+        检查地址是否在 control 区域。
+
+        control 区域必须用 sysop 指令访问。
+        """
+        vpn = addr // self.page_size
+        entry = self.entries.get(vpn)
+        return entry.c if entry else False
 
     def get_page_count(self) -> int:
         """获取已映射页数"""

@@ -15,10 +15,7 @@ Main components:
 """
 
 from .core import RPACore, Domain, DomainBlock, MemtableEntry, PageTableMode, FaultInfo
-from .memory import (
-    MemoryManager, PageTable, PageTableEntry, PageTableMode,
-    Memory, INHERIT, INDEPENDENT
-)
+from .memory import MemoryManager, PageTable, PageTableEntry, PageTableMode, Memory, INHERIT, INDEPENDENT
 from .emulator import (
     SimpleCore, Assembler, CPUState, Instruction, OpCode,
     Asm
@@ -31,8 +28,7 @@ __all__ = [
     # Core
     "RPACore", "Domain", "DomainBlock", "MemtableEntry", "PageTableMode", "FaultInfo",
     # Memory
-    "MemoryManager", "PageTable", "PageTableEntry", "Memory",
-    "INHERIT", "INDEPENDENT",
+    "MemoryManager", "PageTable", "PageTableEntry", "Memory", "INHERIT", "INDEPENDENT",
     # Core (SimpleCore)
     "SimpleCore", "Assembler", "CPUState", "Instruction", "OpCode", "Asm",
     # Machine

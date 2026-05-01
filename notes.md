@@ -16,6 +16,16 @@
 | interrupt_ctrl_base | interrupt_ctrl | ✅ 完成 |
 | pagetable_addr | (已删除) | ✅ 完成 |
 
+### 待论文修改的术语
+
+以下术语已从代码中移除，论文中需要对应修改：
+
+| 代码中已移除 | 论文中应使用 |
+|-------------|-------------|
+| Level | Domain |
+| LevelConfig | DomainBlock |
+| INHERIT | PageTableMode.INHERIT 或删除（概念上表示继承页表） |
+
 ### DomainBlock 字段
 
 | 偏移 | 字段 | 说明 |
@@ -35,6 +45,20 @@
 - 子域如需建立映射：保存旧表 → 创建新表 → 更新此字段
 - 更新动作表示新页表生效
 - 值为 0 表示不建立新映射（try-catch 场合）
+
+### 页表属性 (rwx c)
+
+页表项属性：
+- r: 可读
+- w: 可写
+- x: 可执行
+- c: control，硬件控制寄存器区域
+
+**control 属性说明**：
+- c=1 表示该内存区域是硬件控制寄存器
+- control 区域必须使用 sysop 指令访问
+- 常规 ldr/str 访问 control 区域会触发异常
+- STDIO 设备的控制寄存器地址就是 control 类型
 
 ### 待补充测试
 
