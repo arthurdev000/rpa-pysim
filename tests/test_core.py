@@ -14,11 +14,11 @@ class TestDomainBlock:
         block = DomainBlock(
             execution_address=0x1000,
             exception_vector=0x2000,
-            memtable_addr=0x10000,
+            memtable_address=0x10000,
         )
         assert block.execution_address == 0x1000
         assert block.exception_vector == 0x2000
-        assert block.memtable_addr == 0x10000
+        assert block.memtable_address == 0x10000
 
 
 class TestDomain:
@@ -61,7 +61,7 @@ class TestRPACore:
         child_block = DomainBlock(
             execution_address=0x1000,
             exception_vector=0x2000,
-            memtable_addr=0x10000,
+            memtable_address=0x10000,
         )
         idx = rpa.configure_child(rpa.root_domain, child_block)
         assert idx == 0
@@ -212,7 +212,7 @@ class TestIntegration:
         block = DomainBlock(
             execution_address=0x4000,
             exception_vector=0x4004,
-            memtable_addr=0x50000,
+            memtable_address=0x50000,
         )
 
         # Write to memory
@@ -223,4 +223,4 @@ class TestIntegration:
 
         assert read_block.execution_address == 0x4000
         assert read_block.exception_vector == 0x4004
-        assert read_block.memtable_addr == 0x50000
+        assert read_block.memtable_address == 0x50000

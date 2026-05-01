@@ -47,10 +47,10 @@ DomainBlock (控制块):
     │ 0x04       │ exception_vector    异常向量                      │
     │ 0x08       │ interrupt_vector    中断向量                      │
     │ 0x0C       │ interrupt_ctrl      中断控制器                    │
-    │ 0x10       │ memtable_addr       内存区域表地址                │
-    │ 0x14-0x7F  │ reserved            保留                          │
-    ├────────────┼───────────────────────────────────────────────────┤
-    │ 0x80       │ status              状态码 (Decoder上报)          │
+    │ 0x10       │ memtable_address    内存区域表地址                │
+    │ 0x14       │ status              状态码 (Decoder上报)          │
+    │ 0x18       │ reserved            保留                          │
+    │ 0x1C       │ padding             填充 (对齐到0x20)             │
     └────────────┴───────────────────────────────────────────────────┘
 
 DESCEND 流程:
@@ -183,11 +183,10 @@ class DomainBlock:
     exception_vector: int = 0      # 0x04: 异常向量
     interrupt_vector: int = 0      # 0x08: 中断向量
     interrupt_ctrl: int = 0        # 0x0C: 中断控制器
-    memtable_addr: int = 0         # 0x10: 内存区域表地址
-    # 0x14-0x7F: 保留
-
-    # 状态字段 (Decoder 上报给 RTL)
-    status: int = 0                # 0x80: 状态码
+    memtable_address: int = 0      # 0x10: 内存区域表地址
+    status: int = 0                # 0x14: 状态码 (Decoder上报)
+    reserved: int = 0              # 0x18: 保留
+    padding: int = 0               # 0x1C: 填充 (对齐到0x20)
 
     # 向后兼容字段
     params: Dict[str, Any] = field(default_factory=dict)
@@ -322,7 +321,7 @@ class RPACore:
 
         return {
             "execution_address": block.execution_address,
-            "memtable": block.memtable_addr,
+            "memtable": block.memtable_address,
             "domain_id": new_id,
         }
 
@@ -390,8 +389,8 @@ class RPACore:
                 exception_vector=self.memory.read_word(addr + 0x04),
                 interrupt_vector=self.memory.read_word(addr + 0x08),
                 interrupt_ctrl=self.memory.read_word(addr + 0x0C),
-                memtable_addr=self.memory.read_word(addr + 0x10),
-                status=self.memory.read_word(addr + 0x80),
+                memtable_address=self.memory.read_word(addr + 0x10),
+                status=self.memory.read_word(addr + 0x14),
             )
         return DomainBlock()
 
@@ -402,9 +401,8 @@ class RPACore:
             self.memory.write_word(addr + 0x04, block.exception_vector)
             self.memory.write_word(addr + 0x08, block.interrupt_vector)
             self.memory.write_word(addr + 0x0C, block.interrupt_ctrl)
-            self.memory.write_word(addr + 0x10, block.memtable_addr)
-            # 状态字段
-            self.memory.write_word(addr + 0x80, block.status)
+            self.memory.write_word(addr + 0x10, block.memtable_address)
+            self.memory.write_word(addr + 0x14, block.status)
 
     def _get_pc(self) -> int:
         """获取当前 PC"""

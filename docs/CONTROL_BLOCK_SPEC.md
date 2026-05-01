@@ -40,11 +40,11 @@ root_domain (最高特权，系统启动时创建)
 0x04    exception_vector      4       异常向量
 0x08    interrupt_vector      4       中断向量
 0x0C    interrupt_ctrl        4       中断控制器
-0x10    memtable_addr         4       内存区域表地址
-0x14-0x7F  reserved           108     保留
-
-────── 状态区域 (Decoder 上报) ──────
-0x80    status                4       状态码
+0x10    memtable_address      4       内存区域表地址
+0x14    status                4       状态码 (Decoder上报)
+0x18    reserved              4       保留
+0x1C    padding               4       填充 (对齐到0x20)
+0x20-0x7F  reserved           96      保留
 ```
 
 ### 字段详解
@@ -70,19 +70,22 @@ root_domain (最高特权，系统启动时创建)
 - 值为 0：子域不能操作中断控制器
 - 值为 非0：子域可以通过 `sysop irq` 操作中断
 
-#### memtable_addr (0x10)
+#### memtable_address (0x10)
 - 内存区域表地址
 - 父域告知子域可用的内存区域
 - 子域如需建立映射：保存旧表 → 创建新表 → 更新此字段（更新动作表示生效）
 - 值为 0：不建立新映射（try-catch 场合）
 
-#### reserved (0x14-0x7F)
-- 保留字段
-
-#### status (0x80)
+#### status (0x14)
 - 状态码，由 Decoder 上报给 RTL
 - RTL 通过 `decoder->dump_status(status)` 获取详细状态信息
 - 不同 ISA 可有不同的状态定义
+
+#### reserved (0x18)
+- 保留字段
+
+#### padding (0x1C)
+- 填充字段，用于对齐到 0x20
 
 ---
 
