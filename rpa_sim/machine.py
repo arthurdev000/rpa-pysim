@@ -1,14 +1,14 @@
 """
-RPA Machine - 集成 RPACore、内存和解码器
+RPA Machine - 集成 RPACore、内存和核心
 
-Machine 类将 RPACore、Memory 和 ISADecoder 组合在一起，
+Machine 类将 RPACore、Memory 和 SimpleCore 组合在一起，
 提供完整的 RPA 执行环境。
 """
 
 from typing import Any, Dict, Optional, Callable
-from .core import RPACore, Level, LevelConfig, FaultInfo
+from .core import RPACore, Domain, DomainBlock, FaultInfo
 from .memory import Memory, MemoryManager, PageTable
-from .emulator import ISADecoder, Assembler
+from .emulator import SimpleCore, Assembler
 
 
 class Machine:
@@ -16,13 +16,13 @@ class Machine:
     RPA 机器实例
 
     组合：
-    - RPACore: 特权层级管理
+    - RPACore: Domain 管理
     - Memory: 内存单元模拟
     - MemoryManager: 页表管理
-    - ISADecoder: 指令执行
+    - SimpleCore: 指令执行
 
     提供：
-    - 层级切换时的真实代码执行
+    - Domain 切换时的真实代码执行
     - 内存隔离验证
     - 页表翻译验证
     """
@@ -39,48 +39,48 @@ class Machine:
         self.memory = Memory(size=memory_size)
         self.mm = MemoryManager(physical_memory=self.memory)
 
-        # 层级对应的解码器
-        # 每个层级可以有独立的解码器实例
-        self.decoders: Dict[int, ISADecoder] = {}
+        # Domain 对应的核心
+        # 每个 Domain 可以有独立的核心实例
+        self.cores: Dict[int, SimpleCore] = {}
 
-        # 根层解码器
-        self.root_decoder = ISADecoder(memory=self.memory)
-        self.decoders[0] = self.root_decoder
+        # 根域核心
+        self.root_core = SimpleCore(memory=self.memory)
+        self.cores[0] = self.root_core
 
-        # 当前层级的解码器
-        self.current_decoder: Optional[ISADecoder] = self.root_decoder
+        # 当前 Domain 的核心
+        self.current_core: Optional[SimpleCore] = self.root_core
 
         # 代码加载地址记录
-        self.code_segments: Dict[int, Dict] = {}  # level_id -> {start, end, entry}
+        self.code_segments: Dict[int, Dict] = {}  # domain_id -> {start, end, entry}
 
-        # 层级页表记录
-        self.level_page_tables: Dict[int, int] = {}  # level_id -> page_table_base
+        # Domain 页表记录
+        self.domain_page_tables: Dict[int, int] = {}  # domain_id -> page_table_base
 
     def load_code(self, code: str, base_addr: int,
-                  level_id: Optional[int] = None) -> int:
+                  domain_id: Optional[int] = None) -> int:
         """
         加载汇编代码到内存
 
         Args:
             code: 汇编代码字符串
             base_addr: 加载基地址
-            level_id: 目标层级ID，None表示当前层级
+            domain_id: 目标 Domain ID，None表示当前 Domain
 
         Returns:
             代码结束地址
         """
-        if level_id is None:
-            level_id = self.rpa.get_level_depth()
+        if domain_id is None:
+            domain_id = self.rpa.get_depth()
 
-        emu = self.decoders.get(level_id)
-        if emu is None:
-            emu = ISADecoder(memory=self.memory)
-            self.decoders[level_id] = emu
+        core = self.cores.get(domain_id)
+        if core is None:
+            core = SimpleCore(memory=self.memory)
+            self.cores[domain_id] = core
 
-        end_addr = emu.load_assembly(code, base_addr=base_addr)
+        end_addr = core.load_assembly(code, base_addr=base_addr)
 
         # 记录代码段
-        self.code_segments[level_id] = {
+        self.code_segments[domain_id] = {
             "start": base_addr,
             "end": end_addr,
             "entry": base_addr,
@@ -102,162 +102,161 @@ class Machine:
         self.memory.write_bytes(base_addr, data)
         return base_addr + len(data)
 
-    def create_page_table(self, level_id: int, base_addr: int) -> PageTable:
+    def load_domain_block(self, addr: int, block: DomainBlock) -> None:
         """
-        为指定层级创建页表
+        将 DomainBlock 写入内存
 
         Args:
-            level_id: 层级ID
+            addr: 目标地址
+            block: DomainBlock 实例
+        """
+        self.rpa.memory = self.memory
+        self.rpa._write_domain_block(addr, block)
+
+    def read_domain_block(self, addr: int) -> DomainBlock:
+        """
+        从内存读取 DomainBlock
+
+        Args:
+            addr: DomainBlock 地址
+
+        Returns:
+            DomainBlock 实例
+        """
+        self.rpa.memory = self.memory
+        return self.rpa._read_domain_block(addr)
+
+    def create_page_table(self, domain_id: int, base_addr: int) -> PageTable:
+        """
+        为指定 Domain 创建页表
+
+        Args:
+            domain_id: Domain ID
             base_addr: 页表基址
 
         Returns:
             创建的页表
         """
         pt = self.mm.create_page_table(base_addr)
-        self.level_page_tables[level_id] = base_addr
+        self.domain_page_tables[domain_id] = base_addr
         return pt
 
-    def map_memory(self, level_id: int, va: int, pa: int,
+    def map_memory(self, domain_id: int, va: int, pa: int,
                    r: bool = True, w: bool = True, x: bool = True) -> None:
         """
-        为指定层级映射内存
+        为指定 Domain 映射内存
 
         Args:
-            level_id: 层级ID
+            domain_id: Domain ID
             va: 虚拟地址
             pa: 物理地址
             r, w, x: 读、写、执行权限
         """
-        pt_base = self.level_page_tables.get(level_id)
+        pt_base = self.domain_page_tables.get(domain_id)
         if pt_base is None:
             # 创建默认页表
-            pt = self.create_page_table(level_id, base_addr=0x10000 * (level_id + 1))
+            pt = self.create_page_table(domain_id, base_addr=0x10000 * (domain_id + 1))
         else:
             pt = self.mm.page_tables[pt_base]
 
         pt.map(va, pa, r, w, x)
 
-    def configure_sublayer(self, parent: Optional[Level], config: LevelConfig,
-                          code: Optional[str] = None) -> int:
+    def configure_child(self, parent: Optional[Domain], block: DomainBlock,
+                        code: Optional[str] = None) -> int:
         """
-        配置子层并可选加载代码
+        配置子域并可选加载代码
 
         Args:
-            parent: 父层级，None表示根层
-            config: 层级配置
+            parent: 父域，None表示根域
+            block: Domain 配置
             code: 可选的汇编代码
 
         Returns:
-            子层索引
+            子域索引
         """
         if parent is None:
-            parent = self.rpa.root
+            parent = self.rpa.root_domain
 
-        idx = self.rpa.configure_sublayer(parent, config)
+        idx = self.rpa.configure_child(parent, block)
 
         # 如果有代码，加载到内存
         if code:
-            level_id = parent.level_id + 1  # 新层级的ID
-            self.load_code(code, config.execution_addr, level_id)
+            domain_id = parent.domain_id * 16 + idx + 1
+            self.load_code(code, block.entry_addr, domain_id)
 
         return idx
 
-    def descend(self, config: LevelConfig,
+    def descend(self, block_addr: int,
                 setup_handler: Optional[Callable] = None) -> Any:
         """
-        进入子层并执行
+        进入子域并执行
 
         Args:
-            config: 层级配置
+            block_addr: DomainBlock 地址
             setup_handler: 可选的设置函数，在进入前调用
 
         Returns:
             执行结果
         """
-        # 获取子层配置
-        sub_index = config.sub_index
-        sub_config = self.rpa.current.get_sublayer(sub_index)
-        if sub_config is None:
-            raise ValueError(f"No sublayer at index {sub_index}")
+        result = self.rpa.descend(block_addr)
 
-        # 创建或获取该层级的解码器
-        level_id = self.rpa.get_level_depth() + 1
-        emu = self.decoders.get(level_id)
-        if emu is None:
-            emu = ISADecoder(memory=self.memory)
-            self.decoders[level_id] = emu
+        # 创建或获取该 Domain 的核心
+        domain_id = result.get("domain_id", self.rpa.get_depth())
+        core = self.cores.get(domain_id)
+        if core is None:
+            core = SimpleCore(memory=self.memory)
+            self.cores[domain_id] = core
 
-        # 设置 descend 处理器
-        def descend_handler(params):
-            if setup_handler:
-                setup_handler(emu, params)
+        if setup_handler:
+            setup_handler(core, result)
 
-            # 设置入口地址
-            emu.state.pc = sub_config.execution_addr
+        # 设置入口地址
+        core.state.pc = result.get("entry", 0)
 
-            # 执行直到 HALT 或 ESCALATE
-            emu.run()
-
-            # 返回结果
-            return emu.state.get_reg(0)
-
-        # 获取当前层级的解码器并设置处理器
-        current_level = self.rpa.get_level_depth()
-        current_emu = self.decoders.get(current_level, self.root_decoder)
-        current_emu.descend_handler = descend_handler
-
-        # 执行 descend
-        result = self.rpa.descend(config)
-
-        # 更新当前解码器
-        self.current_decoder = self.decoders.get(self.rpa.get_level_depth())
+        # 更新当前核心
+        self.current_core = core
 
         return result
 
-    def escalate(self, config: LevelConfig,
-                 handler: Optional[Callable] = None) -> Any:
+    def escalate(self, service_type: int) -> Any:
         """
-        从当前层请求父层服务
+        从当前 Domain 请求父域服务
 
         Args:
-            config: 配置
-            handler: 父层处理器
+            service_type: 服务类型
 
         Returns:
             处理结果
         """
-        if handler:
-            self.rpa.current.context["service_handler"] = handler
+        return self.rpa.escalate(service_type)
 
-        return self.rpa.escalate(config)
-
-    def run_at_level(self, level_id: int, entry_addr: Optional[int] = None,
-                     max_steps: int = 10000) -> int:
+    def run_at_domain(self, domain_id: int, entry_addr: Optional[int] = None,
+                      max_steps: int = 10000) -> int:
         """
-        在指定层级运行代码
+        在指定 Domain 运行代码
 
         Args:
-            level_id: 层级ID
+            domain_id: Domain ID
             entry_addr: 入口地址，None使用配置的入口
             max_steps: 最大执行步数
 
         Returns:
             执行步数
         """
-        emu = self.decoders.get(level_id)
-        if emu is None:
-            raise ValueError(f"No emulator for level {level_id}")
+        core = self.cores.get(domain_id)
+        if core is None:
+            raise ValueError(f"No core for domain {domain_id}")
 
         # 设置入口地址
         if entry_addr is None:
-            segment = self.code_segments.get(level_id)
+            segment = self.code_segments.get(domain_id)
             if segment:
                 entry_addr = segment["entry"]
             else:
-                raise ValueError(f"No entry address for level {level_id}")
+                raise ValueError(f"No entry address for domain {domain_id}")
 
-        emu.state.pc = entry_addr
-        return emu.run(max_steps=max_steps)
+        core.state.pc = entry_addr
+        return core.run(max_steps=max_steps)
 
     def read_memory(self, addr: int, size: int = 4) -> int:
         """读取内存（字）"""
@@ -277,65 +276,65 @@ class Machine:
         else:
             self.memory.write_word(addr, value)
 
-    def get_register(self, reg: int, level_id: Optional[int] = None) -> int:
+    def get_register(self, reg: int, domain_id: Optional[int] = None) -> int:
         """
         获取寄存器值
 
         Args:
             reg: 寄存器编号 (0-15)
-            level_id: 层级ID，None表示当前层级
+            domain_id: Domain ID，None表示当前 Domain
 
         Returns:
             寄存器值
         """
-        if level_id is None:
-            level_id = self.rpa.get_level_depth()
+        if domain_id is None:
+            domain_id = self.rpa.get_depth()
 
-        emu = self.decoders.get(level_id)
-        if emu is None:
+        core = self.cores.get(domain_id)
+        if core is None:
             return 0
-        return emu.state.get_reg(reg)
+        return core.state.get_reg(reg)
 
-    def set_register(self, reg: int, value: int, level_id: Optional[int] = None) -> None:
+    def set_register(self, reg: int, value: int, domain_id: Optional[int] = None) -> None:
         """
         设置寄存器值
 
         Args:
             reg: 寄存器编号 (0-15)
             value: 值
-            level_id: 层级ID，None表示当前层级
+            domain_id: Domain ID，None表示当前 Domain
         """
-        if level_id is None:
-            level_id = self.rpa.get_level_depth()
+        if domain_id is None:
+            domain_id = self.rpa.get_depth()
 
-        emu = self.decoders.get(level_id)
-        if emu is None:
-            emu = ISADecoder(memory=self.memory)
-            self.decoders[level_id] = emu
+        core = self.cores.get(domain_id)
+        if core is None:
+            core = SimpleCore(memory=self.memory)
+            self.cores[domain_id] = core
 
-        emu.state.set_reg(reg, value)
+        core.state.set_reg(reg, value)
 
-    def get_execution_log(self, level_id: Optional[int] = None) -> list:
+    def get_execution_log(self, domain_id: Optional[int] = None) -> list:
         """
         获取执行日志
 
         Args:
-            level_id: 层级ID，None表示当前层级
+            domain_id: Domain ID，None表示当前 Domain
 
         Returns:
             执行日志列表
         """
-        if level_id is None:
-            level_id = self.rpa.get_level_depth()
+        if domain_id is None:
+            domain_id = self.rpa.get_depth()
 
-        emu = self.decoders.get(level_id)
-        if emu is None:
+        core = self.cores.get(domain_id)
+        if core is None:
             return []
-        return emu.get_execution_log()
+        return core.get_execution_log()
 
-    def get_level_depth(self) -> int:
-        """获取当前层级深度"""
-        return self.rpa.get_level_depth()
+    def get_depth(self) -> int:
+        """获取当前 Domain 深度"""
+        return self.rpa.get_depth()
 
     def get_stats(self) -> Dict[str, int]:
         """获取统计信息"""
@@ -350,7 +349,7 @@ class Machine:
         self.rpa = RPACore()
         self.memory = Memory(size=self.memory.size)
         self.mm = MemoryManager(physical_memory=self.memory)
-        self.decoders = {0: ISADecoder(memory=self.memory)}
-        self.current_decoder = self.decoders[0]
+        self.cores = {0: SimpleCore(memory=self.memory)}
+        self.current_core = self.cores[0]
         self.code_segments.clear()
-        self.level_page_tables.clear()
+        self.domain_page_tables.clear()
