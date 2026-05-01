@@ -19,12 +19,6 @@ from enum import Enum, auto
 import struct
 
 
-class PageTableMode(Enum):
-    """页表模式"""
-    INHERIT = "inherit"      # 继承父层页表
-    INDEPENDENT = "independent"  # 独立页表
-
-
 @dataclass
 class PageTableEntry:
     """单个页表项"""
@@ -366,19 +360,15 @@ class MemoryManager:
         self.page_tables[base_addr] = pt
         return pt
 
-    def set_level_page_table(self, level_id: int,
-                             pt_base: int | PageTableMode) -> None:
+    def set_level_page_table(self, level_id: int, pt_base: int) -> None:
         """
         设置某层的页表。
 
         Args:
             level_id: 层级ID
-            pt_base: 页表基址，或 PageTableMode.INHERIT 表示继承父层
+            pt_base: 页表基址
         """
-        if pt_base == PageTableMode.INHERIT:
-            self.level_page_tables[level_id] = -1  # -1 表示继承
-        else:
-            self.level_page_tables[level_id] = pt_base
+        self.level_page_tables[level_id] = pt_base
 
     def translate_stacked(self, va: int, level_stack: List[int]) -> int:
         """
@@ -400,8 +390,8 @@ class MemoryManager:
         for level_id in reversed(level_stack):
             pt_base = self.level_page_tables.get(level_id)
 
-            if pt_base is None or pt_base == -1:
-                # INHERIT：跳过此层
+            if pt_base is None:
+                # 无页表：直接使用当前地址
                 continue
 
             pt = self.page_tables.get(pt_base)
@@ -469,8 +459,3 @@ class MemoryManager:
                 for vpn, entry in pt.entries.items()
             }
         }
-
-
-# 便捷常量
-INHERIT = PageTableMode.INHERIT
-INDEPENDENT = PageTableMode.INDEPENDENT

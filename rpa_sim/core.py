@@ -138,12 +138,6 @@ from typing import Any, Optional, List, Dict, Callable
 from enum import Enum, auto
 
 
-class PageTableMode(Enum):
-    """页表模式"""
-    INHERIT = auto()      # 继承父层页表
-    INDEPENDENT = auto()  # 独立页表
-
-
 @dataclass
 class MemtableEntry:
     """
