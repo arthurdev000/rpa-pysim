@@ -48,8 +48,7 @@ DomainBlock (控制块):
     │ 0x08       │ interrupt_vector    中断向量                      │
     │ 0x0C       │ interrupt_ctrl      中断控制器                    │
     │ 0x10       │ memtable_addr       内存区域表地址                │
-    │ 0x14       │ reserved            保留                          │
-    │ 0x18       │ flags               控制标志                      │
+    │ 0x14-0x3B  │ reserved            保留                          │
     │ 0x1C-0x3B  │ reserved            保留                          │
     ├────────────┼───────────────────────────────────────────────────┤
     │ 0x3C       │ saved_pc            保存的 PC                     │
@@ -204,14 +203,13 @@ class DomainBlock:
     interrupt_vector: int = 0      # 0x08: 中断向量
     interrupt_ctrl: int = 0        # 0x0C: 中断控制器
     memtable_addr: int = 0         # 0x10: 内存区域表地址
-    flags: int = 0                 # 0x18: 控制标志
 
     # 保存的上下文 (硬件在 ESCALATE/异常时保存)
     saved_pc: int = 0              # 0x3C
     saved_lr: int = 0              # 0x40
     saved_sp: int = 0              # 0x44
     saved_regs: List[int] = field(default_factory=lambda: [0] * 13)
-    saved_flags: int = 0           # 0x78
+    saved_flags: int = 0           # 0x78: 保存的 CPU 条件标志 (N/Z/C/V)
 
     # 返回值
     return_value: int = 0          # 0x7C
@@ -225,26 +223,6 @@ class DomainBlock:
     params: Dict[str, Any] = field(default_factory=dict)
     program: Dict[str, Any] = field(default_factory=dict)
     sub_index: int = 0
-
-    # 标志位
-    FLAG_NO_DESCEND = 1 << 0
-    FLAG_NO_IRQ = 1 << 1
-    FLAG_NO_MEMTABLE_WRITE = 1 << 2
-
-    @property
-    def can_descend(self) -> bool:
-        """是否可以创建子域"""
-        return (self.flags & self.FLAG_NO_DESCEND) == 0
-
-    @property
-    def can_handle_irq(self) -> bool:
-        """是否可以处理中断"""
-        return (self.flags & self.FLAG_NO_IRQ) == 0 and self.interrupt_ctrl != 0
-
-    @property
-    def can_write_memtable(self) -> bool:
-        """是否可以修改内存区域表"""
-        return (self.flags & self.FLAG_NO_MEMTABLE_WRITE) == 0
 
 
 @dataclass
@@ -462,7 +440,6 @@ class RPACore:
                 interrupt_vector=self.memory.read_word(addr + 0x08),
                 interrupt_ctrl=self.memory.read_word(addr + 0x0C),
                 memtable_addr=self.memory.read_word(addr + 0x10),
-                flags=self.memory.read_word(addr + 0x18),
             )
         return DomainBlock()
 
@@ -474,7 +451,6 @@ class RPACore:
             self.memory.write_word(addr + 0x08, block.interrupt_vector)
             self.memory.write_word(addr + 0x0C, block.interrupt_ctrl)
             self.memory.write_word(addr + 0x10, block.memtable_addr)
-            self.memory.write_word(addr + 0x18, block.flags)
 
             self.memory.write_word(addr + 0x3C, block.saved_pc)
             self.memory.write_word(addr + 0x40, block.saved_lr)
