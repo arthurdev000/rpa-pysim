@@ -24,17 +24,7 @@ from .emulator import (
 )
 from .machine import Machine
 
-# Constants
-INHERIT = 0  # page_table = 0 means inherit
-INDEPENDENT = PageTableMode.INDEPENDENT
-
-# Compatibility aliases (deprecated)
-Level = Domain
-LevelConfig = DomainBlock
-ISADecoder = SimpleCore
-SubConfig = DomainBlock
-
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __all__ = [
     # Core
     "RPACore", "Domain", "DomainBlock", "MemtableEntry", "PageTableMode", "FaultInfo",
@@ -45,6 +35,4 @@ __all__ = [
     "SimpleCore", "Assembler", "CPUState", "Instruction", "OpCode", "Asm",
     # Machine
     "Machine",
-    # Legacy (deprecated)
-    "Level", "LevelConfig", "ISADecoder", "SubConfig",
 ]

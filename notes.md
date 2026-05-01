@@ -13,12 +13,27 @@
 | ISADecoder | SimpleCore | ✅ 完成 |
 | PhysicalMemory | Memory | ✅ 完成 |
 | Emulator | ISADecoder | ✅ 完成 → SimpleCore |
+| interrupt_ctrl_base | interrupt_ctrl | ✅ 完成 |
+| pagetable_addr | (已删除) | ✅ 完成 |
 
-### 新增内容
+### DomainBlock 字段
 
-1. **DomainBlock 结构** - 128字节控制块，支持内存读写
-2. **SYSOP 指令** - 系统操作指令（irq, memtable）
-3. **向后兼容别名** - execution_addr, page_table 等
+| 偏移 | 字段 | 说明 |
+|------|------|------|
+| 0x00 | entry_addr | 入口地址 |
+| 0x04 | exception_vector | 异常向量 |
+| 0x08 | interrupt_vector | 中断向量 |
+| 0x0C | interrupt_ctrl | 中断控制器 |
+| 0x10 | memtable_addr | 内存区域表地址 |
+| 0x14 | reserved | 保留 |
+| 0x18 | flags | 控制标志 |
+
+### memtable_addr 说明
+
+- 父域告知子域可用的内存区域
+- 子域如需建立映射：保存旧表 → 创建新表 → 更新此字段
+- 更新动作表示新页表生效
+- 值为 0 表示不建立新映射（try-catch 场合）
 
 ### 待补充测试
 
@@ -50,12 +65,18 @@
 
 ## 已完成
 
+### 2026-05-01: 清理别名和冗余字段
+- 删除 pagetable_addr 字段（与 memtable_addr 重复）
+- 删除所有向后兼容别名（execution_addr, page_table, interrupt_controller）
+- interrupt_ctrl_base 改名为 interrupt_ctrl
+- 版本更新到 0.5.0
+
 ### 2026-04-30: 代码重构
 - Level → Domain
 - LevelConfig → DomainBlock
 - ISADecoder → SimpleCore
 - 新增 SYSOP 指令
-- 精简测试，30个测试全部通过
+- 精简测试，35个测试全部通过
 
 ### 2026-04-30: 控制块设计
 - 完成 DomainBlock 结构定义（128字节）
