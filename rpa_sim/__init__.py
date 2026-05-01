@@ -11,6 +11,7 @@ Main components:
 - MemoryManager: Page table stacking management
 - SimpleCore: Simplified instruction set core (ARM-like)
 - Machine: Complete machine integrating RPACore, Memory, SimpleCore
+- StdioDevice: Console output device for debugging
 """
 
 from .core import RPACore, Domain, DomainBlock, MemtableEntry, PageTableMode, FaultInfo
@@ -22,7 +23,8 @@ from .emulator import (
     SimpleCore, Assembler, CPUState, Instruction, OpCode,
     Asm
 )
-from .machine import Machine
+from .machine import Machine, STDIO_BASE
+from .stdio import StdioDevice, StdioDeviceManager
 
 __version__ = "0.5.0"
 __all__ = [
@@ -34,5 +36,7 @@ __all__ = [
     # Core (SimpleCore)
     "SimpleCore", "Assembler", "CPUState", "Instruction", "OpCode", "Asm",
     # Machine
-    "Machine",
+    "Machine", "STDIO_BASE",
+    # Stdio
+    "StdioDevice", "StdioDeviceManager",
 ]
