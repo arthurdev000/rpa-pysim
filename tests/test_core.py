@@ -14,27 +14,11 @@ class TestDomainBlock:
         block = DomainBlock(
             entry_addr=0x1000,
             exception_vector=0x2000,
-            pagetable_addr=0x10000,
+            memtable_addr=0x10000,
         )
         assert block.entry_addr == 0x1000
         assert block.exception_vector == 0x2000
-        assert block.pagetable_addr == 0x10000
-
-    def test_backward_compat(self):
-        """Test backward compatibility aliases"""
-        block = DomainBlock(
-            entry_addr=0x1000,
-            pagetable_addr=0x10000,
-        )
-        # Test property aliases
-        assert block.execution_addr == 0x1000
-        assert block.page_table == 0x10000
-
-        # Test setter aliases
-        block.execution_addr = 0x2000
-        block.page_table = 0x20000
-        assert block.entry_addr == 0x2000
-        assert block.pagetable_addr == 0x20000
+        assert block.memtable_addr == 0x10000
 
     def test_flags(self):
         """Test flag properties"""
@@ -85,7 +69,7 @@ class TestRPACore:
         child_block = DomainBlock(
             entry_addr=0x1000,
             exception_vector=0x2000,
-            pagetable_addr=0x10000,
+            memtable_addr=0x10000,
         )
         idx = rpa.configure_child(rpa.root_domain, child_block)
         assert idx == 0
@@ -236,7 +220,7 @@ class TestIntegration:
         block = DomainBlock(
             entry_addr=0x4000,
             exception_vector=0x4004,
-            pagetable_addr=0x50000,
+            memtable_addr=0x50000,
         )
 
         # Write to memory
@@ -247,4 +231,4 @@ class TestIntegration:
 
         assert read_block.entry_addr == 0x4000
         assert read_block.exception_vector == 0x4004
-        assert read_block.pagetable_addr == 0x50000
+        assert read_block.memtable_addr == 0x50000

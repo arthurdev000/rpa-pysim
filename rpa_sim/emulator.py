@@ -41,9 +41,9 @@ DomainBlock (控制块):
         │ 0x00       │ entry_addr                │ 入口地址              │
         │ 0x04       │ exception_vector          │ 异常向量              │
         │ 0x08       │ interrupt_vector          │ 中断向量              │
-        │ 0x0C       │ interrupt_ctrl_base       │ 中断控制器基址        │
+        │ 0x0C       │ interrupt_ctrl            │ 中断控制器            │
         │ 0x10       │ memtable_addr             │ 内存区域表地址        │
-        │ 0x14       │ pagetable_addr            │ 页表基址              │
+        │ 0x14       │ reserved                  │ 保留                  │
         │ 0x18       │ flags                     │ 控制标志              │
         │ 0x1C-0x3B  │ reserved                  │ 保留                  │
         ├────────────┼───────────────────────────┼───────────────────────┤

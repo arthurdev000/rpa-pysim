@@ -46,9 +46,9 @@ DomainBlock (控制块):
     │ 0x00       │ entry_addr          子域入口地址                  │
     │ 0x04       │ exception_vector    异常向量                      │
     │ 0x08       │ interrupt_vector    中断向量                      │
-    │ 0x0C       │ interrupt_ctrl_base 中断控制器基址                │
+    │ 0x0C       │ interrupt_ctrl      中断控制器                    │
     │ 0x10       │ memtable_addr       内存区域表地址                │
-    │ 0x14       │ pagetable_addr      页表基址 (0=继承父域)         │
+    │ 0x14       │ reserved            保留                          │
     │ 0x18       │ flags               控制标志                      │
     │ 0x1C-0x3B  │ reserved            保留                          │
     ├────────────┼───────────────────────────────────────────────────┤
@@ -202,9 +202,8 @@ class DomainBlock:
     entry_addr: int = 0            # 0x00: 入口地址
     exception_vector: int = 0      # 0x04: 异常向量
     interrupt_vector: int = 0      # 0x08: 中断向量
-    interrupt_ctrl_base: int = 0   # 0x0C: 中断控制器基址
+    interrupt_ctrl: int = 0        # 0x0C: 中断控制器
     memtable_addr: int = 0         # 0x10: 内存区域表地址
-    pagetable_addr: int = 0        # 0x14: 页表基址
     flags: int = 0                 # 0x18: 控制标志
 
     # 保存的上下文 (硬件在 ESCALATE/异常时保存)
@@ -240,37 +239,12 @@ class DomainBlock:
     @property
     def can_handle_irq(self) -> bool:
         """是否可以处理中断"""
-        return (self.flags & self.FLAG_NO_IRQ) == 0 and self.interrupt_ctrl_base != 0
+        return (self.flags & self.FLAG_NO_IRQ) == 0 and self.interrupt_ctrl != 0
 
     @property
     def can_write_memtable(self) -> bool:
         """是否可以修改内存区域表"""
         return (self.flags & self.FLAG_NO_MEMTABLE_WRITE) == 0
-
-    # 向后兼容别名
-    @property
-    def execution_addr(self) -> int:
-        return self.entry_addr
-
-    @execution_addr.setter
-    def execution_addr(self, value: int):
-        self.entry_addr = value
-
-    @property
-    def page_table(self) -> int:
-        return self.pagetable_addr
-
-    @page_table.setter
-    def page_table(self, value: int):
-        self.pagetable_addr = value
-
-    @property
-    def interrupt_controller(self) -> int:
-        return self.interrupt_ctrl_base
-
-    @interrupt_controller.setter
-    def interrupt_controller(self, value: int):
-        self.interrupt_ctrl_base = value
 
 
 @dataclass
@@ -327,7 +301,6 @@ class RPACore:
         root_block = DomainBlock(
             entry_addr=0x8000,
             exception_vector=0x8004,
-            pagetable_addr=0x10000,
         )
         self.root_domain: Domain = Domain(domain_id=0, block=root_block)
 
@@ -407,7 +380,7 @@ class RPACore:
 
         return {
             "entry": block.entry_addr,
-            "pagetable": block.pagetable_addr,
+            "memtable": block.memtable_addr,
             "domain_id": new_id,
         }
 
@@ -487,9 +460,8 @@ class RPACore:
                 entry_addr=self.memory.read_word(addr + 0x00),
                 exception_vector=self.memory.read_word(addr + 0x04),
                 interrupt_vector=self.memory.read_word(addr + 0x08),
-                interrupt_ctrl_base=self.memory.read_word(addr + 0x0C),
+                interrupt_ctrl=self.memory.read_word(addr + 0x0C),
                 memtable_addr=self.memory.read_word(addr + 0x10),
-                pagetable_addr=self.memory.read_word(addr + 0x14),
                 flags=self.memory.read_word(addr + 0x18),
             )
         return DomainBlock()
@@ -500,9 +472,8 @@ class RPACore:
             self.memory.write_word(addr + 0x00, block.entry_addr)
             self.memory.write_word(addr + 0x04, block.exception_vector)
             self.memory.write_word(addr + 0x08, block.interrupt_vector)
-            self.memory.write_word(addr + 0x0C, block.interrupt_ctrl_base)
+            self.memory.write_word(addr + 0x0C, block.interrupt_ctrl)
             self.memory.write_word(addr + 0x10, block.memtable_addr)
-            self.memory.write_word(addr + 0x14, block.pagetable_addr)
             self.memory.write_word(addr + 0x18, block.flags)
 
             self.memory.write_word(addr + 0x3C, block.saved_pc)
