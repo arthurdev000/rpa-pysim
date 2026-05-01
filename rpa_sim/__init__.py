@@ -1,35 +1,34 @@
 """
 RPA Simulator - Recursive Privilege Architecture Concept Verification
 
-This package provides a Python simulator for RPA (Recursive Privilege Architecture),
-demonstrating the descend() and escalate() primitives.
-
 Main components:
-- RPACore: RPA core, manages Domain hierarchy
-- Domain, DomainBlock: Privilege domain management
-- Memory: Memory simulation (physical memory + page table management)
-- MemoryManager: Page table stacking management
+- RPACore: Domain hierarchy management
+- Domain, DomainBlock: Privilege domain structures
+- Memory: Physical memory simulation
+- MemoryManager: Page table chain translation
+- PageTable, PageTableEntry: Page table structures
+- TranslationError, BusError: Address translation exceptions
 - SimpleCore: Simplified instruction set core (ARM-like)
-- Machine: Complete machine integrating RPACore, Memory, SimpleCore
-- StdioDevice: Console output device for debugging
+- Machine: Complete machine integrating all components
 """
 
 from .core import RPACore, Domain, DomainBlock, MemtableEntry, FaultInfo
-from .memory import MemoryManager, PageTable, PageTableEntry, Memory
-from .emulator import (
-    SimpleCore, Assembler, CPUState, Instruction, OpCode,
-    Asm
+from .memory import (
+    MemoryManager, PageTable, PageTableEntry, Memory,
+    TranslationError, BusError
 )
+from .emulator import SimpleCore, Assembler, CPUState, Instruction, OpCode, Asm
 from .machine import Machine, STDIO_BASE
 from .stdio import StdioDevice, StdioDeviceManager
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 __all__ = [
     # Core
     "RPACore", "Domain", "DomainBlock", "MemtableEntry", "FaultInfo",
     # Memory
     "MemoryManager", "PageTable", "PageTableEntry", "Memory",
-    # Core (SimpleCore)
+    "TranslationError", "BusError",
+    # Emulator
     "SimpleCore", "Assembler", "CPUState", "Instruction", "OpCode", "Asm",
     # Machine
     "Machine", "STDIO_BASE",
