@@ -9,6 +9,11 @@ from typing import Any, Dict, Optional, Callable
 from .core import RPACore, Domain, DomainBlock, FaultInfo
 from .memory import Memory, MemoryManager, PageTable
 from .emulator import SimpleCore, Assembler
+from .stdio import StdioDevice, StdioDeviceManager
+
+
+# 默认 STDIO 设备地址
+STDIO_BASE = 0xFFFF0000
 
 
 class Machine:
@@ -20,24 +25,35 @@ class Machine:
     - Memory: 内存单元模拟
     - MemoryManager: 页表管理
     - SimpleCore: 指令执行
+    - StdioDevice: 控制台输出设备
 
     提供：
     - Domain 切换时的真实代码执行
     - 内存隔离验证
     - 页表翻译验证
+    - 控制台输出
     """
 
-    def __init__(self, memory_size: int = 1024 * 1024):
+    def __init__(self, memory_size: int = 1024 * 1024,
+                 stdio_base: int = STDIO_BASE,
+                 stdio_callback: Optional[Callable[[str], None]] = None):
         """
         初始化 RPA 机器
 
         Args:
             memory_size: 物理内存大小，默认1MB
+            stdio_base: STDIO 设备基地址，默认 0xFFFF0000
+            stdio_callback: 自定义输出回调，默认为 print
         """
         # 核心组件
         self.rpa = RPACore()
         self.memory = Memory(size=memory_size)
         self.mm = MemoryManager(physical_memory=self.memory)
+
+        # STDIO 设备
+        self.stdio = StdioDevice(base_addr=stdio_base, output_callback=stdio_callback)
+        self.stdio_manager = StdioDeviceManager()
+        self.stdio_manager.register(self.stdio)
 
         # Domain 对应的核心
         # 每个 Domain 可以有独立的核心实例
