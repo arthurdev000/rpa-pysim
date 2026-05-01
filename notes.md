@@ -24,11 +24,12 @@
 | 0x04 | exception_vector | 异常向量 |
 | 0x08 | interrupt_vector | 中断向量 |
 | 0x0C | interrupt_ctrl | 中断控制器 |
-| 0x10 | memtable_addr | 内存区域表地址 |
-| 0x14 | reserved | 保留 |
-| 0x18 | flags | 控制标志 |
+| 0x10 | memtable_address | 内存区域表地址 |
+| 0x14 | status | 状态码 (Decoder上报) |
+| 0x18 | reserved | 保留 |
+| 0x1C | padding | 填充 (对齐到0x20) |
 
-### memtable_addr 说明
+### memtable_address 说明
 
 - 父域告知子域可用的内存区域
 - 子域如需建立映射：保存旧表 → 创建新表 → 更新此字段
