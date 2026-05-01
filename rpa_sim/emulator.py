@@ -38,24 +38,14 @@ DomainBlock (控制块):
         ├────────────┬───────────────────────────────────────────────────┤
         │ 偏移       │ 字段名                    │ 说明                  │
         ├────────────┼───────────────────────────┼───────────────────────┤
-        │ 0x00       │ entry_addr                │ 入口地址              │
+        │ 0x00       │ execution_address         │ 执行地址              │
         │ 0x04       │ exception_vector          │ 异常向量              │
         │ 0x08       │ interrupt_vector          │ 中断向量              │
         │ 0x0C       │ interrupt_ctrl            │ 中断控制器            │
         │ 0x10       │ memtable_addr             │ 内存区域表地址        │
-        │ 0x14-0x3B  │ reserved                  │ 保留                  │
-        │ 0x1C-0x3B  │ reserved                  │ 保留                  │
+        │ 0x14-0x7F  │ reserved                  │ 保留                  │
         ├────────────┼───────────────────────────┼───────────────────────┤
-        │ 0x3C       │ saved_pc                  │ 保存的 PC             │
-        │ 0x40       │ saved_lr                  │ 保存的 LR             │
-        │ 0x44       │ saved_sp                  │ 保存的 SP             │
-        │ 0x48-0x78  │ saved_regs[13]            │ 保存的 R0-R12         │
-        │ 0x78       │ saved_flags               │ 保存的条件标志        │
-        │ 0x7C       │ return_value              │ 返回值                │
-        ├────────────┼───────────────────────────┼───────────────────────┤
-        │ 0x80       │ exception_type            │ 异常类型              │
-        │ 0x84       │ exception_addr            │ 异常地址              │
-        │ 0x88       │ exception_info            │ 异常详情              │
+        │ 0x80       │ status                    │ 状态码 (Decoder上报)  │
         └────────────┴───────────────────────────┴───────────────────────┘
 
 地址翻译流程:
@@ -103,7 +93,7 @@ DESCEND/ESCALATE 流程:
         │   父域       │                    │   子域       │
         │              │                    │              │
         │  1. 保存上下文到控制块            │              │
-        │  2. 读取子域 entry_addr ──────────▶ 开始执行    │
+        │  2. 读取子域 execution_address ────▶ 开始执行    │
         │              │                    │              │
         │              │                    │  ...执行...  │
         │              │                    │              │
@@ -550,8 +540,8 @@ class SimpleCore:
 
     DESCEND R0 (R0 = 控制块地址):
         1. 保存当前上下文到控制块
-        2. 读取子域控制块的 entry_addr
-        3. 跳转到 entry_addr 开始执行子域代码
+        2. 读取子域控制块的 execution_address
+        3. 跳转到 execution_address 开始执行子域代码
 
     ESCALATE R0 (R0 = 服务类型):
         1. 保存当前上下文到控制块
@@ -839,8 +829,8 @@ class SimpleCore:
         ┌─────────────────────────────────────────────────┐
         │ 1. 从 Rd 读取控制块地址                          │
         │ 2. 保存当前上下文到当前域的控制块                 │
-        │ 3. 读取子域控制块的 entry_addr                   │
-        │ 4. 跳转到 entry_addr                             │
+        │ 3. 读取子域控制块的 execution_address            │
+        │ 4. 跳转到 execution_address                      │
         └─────────────────────────────────────────────────┘
         """
         block_addr = self.state.get_reg(inst.rd)

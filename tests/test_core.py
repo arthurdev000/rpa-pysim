@@ -12,11 +12,11 @@ class TestDomainBlock:
     def test_create_block(self):
         """Test creating a domain block"""
         block = DomainBlock(
-            entry_addr=0x1000,
+            execution_address=0x1000,
             exception_vector=0x2000,
             memtable_addr=0x10000,
         )
-        assert block.entry_addr == 0x1000
+        assert block.execution_address == 0x1000
         assert block.exception_vector == 0x2000
         assert block.memtable_addr == 0x10000
 
@@ -26,17 +26,17 @@ class TestDomain:
 
     def test_create_domain(self):
         """Test creating a domain"""
-        block = DomainBlock(entry_addr=0x8000)
+        block = DomainBlock(execution_address=0x8000)
         domain = Domain(domain_id=0, block=block)
         assert domain.domain_id == 0
         assert len(domain.children) == 0
 
     def test_add_child(self):
         """Test adding child domains"""
-        block = DomainBlock(entry_addr=0x8000)
+        block = DomainBlock(execution_address=0x8000)
         parent = Domain(domain_id=0, block=block)
 
-        child_block = DomainBlock(entry_addr=0x1000)
+        child_block = DomainBlock(execution_address=0x1000)
         child = Domain(domain_id=1, block=child_block)
 
         idx = parent.add_child(child)
@@ -59,7 +59,7 @@ class TestRPACore:
         rpa = RPACore()
 
         child_block = DomainBlock(
-            entry_addr=0x1000,
+            execution_address=0x1000,
             exception_vector=0x2000,
             memtable_addr=0x10000,
         )
@@ -71,7 +71,7 @@ class TestRPACore:
         """Test descend requires memory"""
         rpa = RPACore()
 
-        child_block = DomainBlock(entry_addr=0x1000)
+        child_block = DomainBlock(execution_address=0x1000)
         rpa.configure_child(rpa.root_domain, child_block)
 
         # descend requires memory to read DomainBlock
@@ -210,7 +210,7 @@ class TestIntegration:
         rpa.memory = mem
 
         block = DomainBlock(
-            entry_addr=0x4000,
+            execution_address=0x4000,
             exception_vector=0x4004,
             memtable_addr=0x50000,
         )
@@ -221,6 +221,6 @@ class TestIntegration:
         # Read back
         read_block = rpa._read_domain_block(0x1000)
 
-        assert read_block.entry_addr == 0x4000
+        assert read_block.execution_address == 0x4000
         assert read_block.exception_vector == 0x4004
         assert read_block.memtable_addr == 0x50000

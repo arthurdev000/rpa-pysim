@@ -20,7 +20,7 @@
 
 | 偏移 | 字段 | 说明 |
 |------|------|------|
-| 0x00 | entry_addr | 入口地址 |
+| 0x00 | execution_address | 执行地址 |
 | 0x04 | exception_vector | 异常向量 |
 | 0x08 | interrupt_vector | 中断向量 |
 | 0x0C | interrupt_ctrl | 中断控制器 |
