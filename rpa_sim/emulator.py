@@ -646,42 +646,28 @@ class SimpleCore:
         """
         执行 DESCEND 指令
 
-        DESCEND Rd (Rd = 控制块地址)
+        RTL 操作：
+        1. 读取控制块
+        2. 切换到子域
+        3. PC = execution_address
 
-        流程:
-        1. 从 Rd 读取控制块地址
-        2. 保存当前上下文到当前控制块（返回地址 = PC + 4）
-        3. 从新控制块读取 execution_address
-        4. 更新 domain_block_addr
-        5. 跳转到 execution_address
+        上下文保存由软件负责（如需要）
         """
         if not self.memory:
             return
 
         block_addr = self.state.get_reg(inst.rd)
 
-        # 保存当前上下文到当前控制块（返回地址 = PC + 4）
-        if self.domain_block_addr != 0:
-            self._save_context(self.domain_block_addr, return_pc=self.state.pc + 4)
-
-        # 读取新控制块
+        # 读取控制块
         execution_addr = self.memory.read_word(block_addr + 0x00)
-        exception_vec = self.memory.read_word(block_addr + 0x04)
         memtable_addr = self.memory.read_word(block_addr + 0x10)
 
-        # 更新状态
+        # 更新当前域
         self.domain_block_addr = block_addr
 
         # 更新 memtable_chain
-        # 如果 memtable_addr != 0，添加到链的前面
         if memtable_addr != 0:
             self.memtable_chain = [memtable_addr] + self.memtable_chain
-
-        # 回调（可选）
-        if self.descend_handler:
-            result = self.descend_handler(block_addr)
-            if result is not None:
-                self.state.set_reg(0, result)
 
         # 跳转到执行地址
         if execution_addr != 0:
@@ -689,70 +675,60 @@ class SimpleCore:
         else:
             self.halted = True
 
+        # 回调（可选，用于高层模拟）
+        if self.descend_handler:
+            result = self.descend_handler(block_addr)
+            if result is not None:
+                self.state.set_reg(0, result)
+
     def _execute_escalate(self, inst: Instruction) -> None:
         """
         执行 ESCALATE 指令
 
-        ESCALATE Rd (Rd = 服务类型)
+        RTL 操作：
+        1. 跳转到当前域的 exception_vector
 
-        流程:
-        1. 从 Rd 读取服务类型
-        2. 保存当前上下文到控制块
-        3. 写入服务类型到 return_value (0x7C)
-        4. 写入异常类型 (0x80) = 0x00 (ESCALATE)
-        5. 写入异常地址 (0x84) = PC
-        6. 触发 escalate_handler 或 halt
+        上下文保存由软件负责（如需要）
         """
-        if not self.memory:
-            return
-
         service_type = self.state.get_reg(inst.rd)
 
-        # 保存上下文
-        if self.domain_block_addr != 0:
-            self._save_context(self.domain_block_addr)
-            self.memory.write_word(self.domain_block_addr + 0x7C, service_type)
-            self.memory.write_word(self.domain_block_addr + 0x80, 0x00)  # ESCALATE
-            self.memory.write_word(self.domain_block_addr + 0x84, self.state.pc)
+        # 读取当前域的 exception_vector 并跳转
+        if self.memory and self.domain_block_addr != 0:
+            exception_vec = self.memory.read_word(self.domain_block_addr + 0x04)
+            if exception_vec != 0:
+                self.state.pc = exception_vec
+                # 回调
+                if self.escalate_handler:
+                    self.escalate_handler(service_type)
+                return
+
+        # 没有异常向量，halt
+        self.halted = True
 
         # 回调
         if self.escalate_handler:
             result = self.escalate_handler(service_type)
             if result is not None:
                 self.state.set_reg(0, result)
-        else:
-            self.halted = True
 
     def _execute_return(self, inst: Instruction) -> None:
         """
         执行 RETURN 指令
 
-        流程:
-        1. 从控制块恢复上下文
-        2. 从 saved_pc 恢复执行
+        RTL 操作：
+        1. 从控制块恢复 PC
 
-        RETURN 通常用于:
-        - 父域处理完 ESCALATE 后返回子域
-        - 异常处理完成后恢复执行
+        这是软件可用的原语，具体语义由软件定义
         """
-        if not self.memory:
-            return
-
-        if self.domain_block_addr != 0:
-            self._restore_context(self.domain_block_addr)
-
-            # 从 memtable_chain 移除当前域的页表
-            memtable_addr = self.memory.read_word(self.domain_block_addr + 0x10)
-            if memtable_addr != 0 and len(self.memtable_chain) > 0:
-                if self.memtable_chain[0] == memtable_addr:
-                    self.memtable_chain = self.memtable_chain[1:]
+        if self.memory and self.domain_block_addr != 0:
+            saved_pc = self.memory.read_word(self.domain_block_addr + 0x3C)
+            if saved_pc != 0:
+                self.state.pc = saved_pc
+                self.halted = False
 
         # 回调
         if self.return_handler:
             self.return_handler(self.state.get_reg(0))
-
-        # 恢复执行
-        self.halted = False
 
     def _save_context(self, block_addr: int, return_pc: int = None) -> None:
         """保存上下文到控制块"""

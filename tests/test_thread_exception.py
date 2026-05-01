@@ -62,65 +62,49 @@ class TestDescendEscalate:
         # R5 不应该被设置（没有执行 MOV R5, #0xBAD）
         assert core.state.get_reg(5) == 0
 
-    def test_descend_saves_context(self):
+    def test_descend_updates_memtable_chain(self):
         """
-        DESCEND 保存上下文到控制块
+        DESCEND 更新 memtable_chain
         """
         mem = Memory(size=64 * 1024)
 
-        block_addr = 0x1000
-        execution_addr = 0x2000
-        mem.write_word(block_addr + 0x00, execution_addr)
-        mem.write_word(block_addr + 0x04, 0x3000)
-        mem.write_word(block_addr + 0x10, 0)
-
-        # 设置初始控制块（模拟父域）
-        parent_block = 0x0800
-        mem.write_word(parent_block + 0x00, 0x0000)
+        block_addr = 0x0800
+        mem.write_word(block_addr + 0x00, 0x2000)    # execution_address
+        mem.write_word(block_addr + 0x04, 0)
+        mem.write_word(block_addr + 0x10, 0x10000)   # memtable_address
 
         core = SimpleCore(memory=mem)
-        core.domain_block_addr = parent_block
+        core.memtable_chain = []
 
-        # 设置父域状态
-        core.state.set_reg(0, 100)
-        core.state.set_reg(1, 200)
-
-        # 父域代码 (起始地址 0x0000)
-        # MOV R2, #0x1000  -> PC = 0x0004
-        # DESCEND R2       -> PC = 0x0008 (返回地址)
         core.load_assembly("""
-            MOV R2, #0x1000
-            DESCEND R2
+            MOV R0, #0x0800
+            DESCEND R0
             HALT
         """, base_addr=0x0000)
 
-        # 子域代码
         core.load_assembly("""
             ESCALATE R0
             HALT
-        """, base_addr=execution_addr)
+        """, base_addr=0x2000)
 
         core.state.pc = 0x0000
         core.escalate_handler = lambda x: (setattr(core, 'halted', True), x)[1]
         core.run()
 
-        # 验证：父域上下文保存到 parent_block
-        # saved_pc 应该是 DESCEND 后的地址 = 0x0008
-        assert mem.read_word(parent_block + 0x3C) == 0x0008
-        # saved_regs
-        assert mem.read_word(parent_block + 0x48) == 100    # R0
-        assert mem.read_word(parent_block + 0x4C) == 200    # R1
+        # 验证：memtable_chain 被更新
+        assert core.memtable_chain == [0x10000]
 
-    def test_escalate_saves_service_type(self):
+    def test_escalate_jumps_to_exception_vector(self):
         """
-        ESCALATE 保存服务类型到控制块
+        ESCALATE 跳转到 exception_vector
         """
         mem = Memory(size=64 * 1024)
 
         block_addr = 0x1000
         execution_addr = 0x2000
+        exception_vec = 0x3000
         mem.write_word(block_addr + 0x00, execution_addr)
-        mem.write_word(block_addr + 0x04, 0x3000)
+        mem.write_word(block_addr + 0x04, exception_vec)
         mem.write_word(block_addr + 0x10, 0)
 
         core = SimpleCore(memory=mem)
@@ -131,18 +115,22 @@ class TestDescendEscalate:
         """, base_addr=0x0000)
 
         core.load_assembly("""
-            MOV R0, #42
-            ESCALATE R0
+            MOV R1, #42
+            ESCALATE R1
             HALT
         """, base_addr=execution_addr)
 
+        # 异常处理代码 - 执行后 halt
+        core.load_assembly("""
+            MOV R2, #0xCAFE
+            HALT
+        """, base_addr=exception_vec)
+
         core.state.pc = 0x0000
-        core.escalate_handler = lambda x: (setattr(core, 'halted', True), x)[1]
         core.run()
 
-        # 验证：服务类型保存到控制块
-        assert mem.read_word(block_addr + 0x7C) == 42   # return_value
-        assert mem.read_word(block_addr + 0x80) == 0    # exception_type = ESCALATE
+        # 验证：跳转到了 exception_vector 并执行了异常处理代码
+        assert core.state.get_reg(2) == 0xCAFE
 
     def test_shared_memory_between_domains(self):
         """
