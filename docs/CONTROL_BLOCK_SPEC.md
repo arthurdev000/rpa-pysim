@@ -42,8 +42,7 @@ root_domain (最高特权，系统启动时创建)
 0x0C    interrupt_ctrl        4       中断控制器
 0x10    memtable_addr         4       内存区域表地址
 0x14    reserved              4       保留
-0x18    flags                 4       控制标志
-0x1C    reserved_0[8]         32      保留
+0x18    reserved_0[8]         36      保留
 
 ────── 子域可写区域 ──────
 0x3C    saved_pc              4       保存的 PC
@@ -71,7 +70,7 @@ root_domain (最高特权，系统启动时创建)
 #### interrupt_vector (0x08)
 - 中断处理入口地址
 - 外部中断发生时跳转到此地址
-- 仅当 interrupt_ctrl_base != 0 时有效
+- 仅当 interrupt_ctrl != 0 时有效
 
 #### interrupt_ctrl (0x0C)
 - 中断控制器
@@ -86,16 +85,6 @@ root_domain (最高特权，系统启动时创建)
 
 #### reserved (0x14)
 - 保留字段
-
-#### flags (0x18)
-控制标志位：
-
-| 位 | 名称 | 说明 |
-|----|------|------|
-| 0 | NO_DESCEND | 禁止创建子域 |
-| 1 | NO_IRQ | 禁用中断 |
-| 2 | NO_MEMTABLE_WRITE | 禁止修改内存区域表 |
-| 3-31 | reserved | 保留 |
 
 #### 保存区域 (0x3C - 0x78)
 - ESCALATE/异常发生时，硬件自动保存当前 Domain 的寄存器
@@ -178,7 +167,7 @@ sysop irq, write, #irq_id, Rs     ; 写入中断 irq_id 的设置
 ```
 
 权限检查：
-- 如果 interrupt_ctrl_base == 0，触发异常
+- 如果 interrupt_ctrl == 0，触发异常
 
 #### memtable - 内存区域操作
 
@@ -186,9 +175,6 @@ sysop irq, write, #irq_id, Rs     ; 写入中断 irq_id 的设置
 sysop memtable, read, #index, Rd   ; 读取第 index 个内存区域
 sysop memtable, write, #index, Rs  ; 写入第 index 个内存区域
 ```
-
-权限检查：
-- 如果 flags.NO_MEMTABLE_WRITE == 1，触发异常
 
 ---
 
@@ -205,7 +191,6 @@ DESCEND Rd    ; Rd = 控制块地址
 2. 验证控制块有效性：
    - 地址对齐到 64 字节
    - entry_addr 有效
-   - 权限检查（flags.NO_DESCEND == 0）
 3. 硬件操作：
    - 保存当前 PC 到父域控制块的 saved_pc
    - 设置当前 Domain 为新 Domain
@@ -282,16 +267,6 @@ RETURN        ; 返回子域
 0x84    exception_addr      触发异常的地址
 0x88    exception_info      异常详情
 ```
-
----
-
-## 权限检查矩阵
-
-| 操作 | NO_DESCEND=1 | NO_IRQ=1 | NO_MEMTABLE_WRITE=1 |
-|------|--------------|----------|---------------------|
-| DESCEND | 异常 | - | - |
-| sysop irq | - | 异常 | - |
-| sysop memtable,write | - | - | 异常 |
 
 ---
 

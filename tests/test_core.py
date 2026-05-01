@@ -20,14 +20,6 @@ class TestDomainBlock:
         assert block.exception_vector == 0x2000
         assert block.memtable_addr == 0x10000
 
-    def test_flags(self):
-        """Test flag properties"""
-        block = DomainBlock()
-        assert block.can_descend is True
-
-        block.flags = DomainBlock.FLAG_NO_DESCEND
-        assert block.can_descend is False
-
 
 class TestDomain:
     """Tests for Domain"""
