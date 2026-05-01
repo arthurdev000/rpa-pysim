@@ -3,49 +3,38 @@ Tests for Memory and SimpleCore
 """
 
 import pytest
-import sys
-sys.path.insert(0, '..')
-
-from rpa_sim import (
-    Memory, MemoryManager, SimpleCore, Asm
-)
+from rpa_sim import Memory, MemoryManager, SimpleCore, Asm
 
 
 class TestMemory:
     """Tests for Memory"""
 
     def test_create_memory(self):
-        """Test creating memory"""
         mem = Memory(size=1024 * 1024)
         assert mem.size == 1024 * 1024
 
     def test_read_write_byte(self):
-        """Test byte read/write"""
         mem = Memory(size=1024 * 1024)
         mem.write_byte(0x1000, 0xAB)
         assert mem.read_byte(0x1000) == 0xAB
 
     def test_read_write_word(self):
-        """Test word (32-bit) read/write"""
         mem = Memory(size=1024 * 1024)
         mem.write_word(0x2000, 0xDEADBEEF)
         assert mem.read_word(0x2000) == 0xDEADBEEF
 
     def test_read_write_bytes(self):
-        """Test multi-byte read/write"""
         mem = Memory(size=1024 * 1024)
         data = bytes([0x01, 0x02, 0x03, 0x04, 0x05])
         mem.write_bytes(0x3000, data)
         assert mem.read_bytes(0x3000, 5) == data
 
     def test_memory_bounds_check(self):
-        """Test memory bounds check"""
         mem = Memory(size=1024)
         with pytest.raises(MemoryError):
             mem.read_byte(0x1000)
 
     def test_access_log(self):
-        """Test access logging"""
         mem = Memory(size=1024)
         mem.clear_access_log()
 
@@ -61,7 +50,6 @@ class TestSimpleCore:
     """Tests for SimpleCore"""
 
     def test_assemble_basic(self):
-        """Test basic assembly"""
         core = SimpleCore()
         end_addr = core.load_assembly("MOV R0, #42", base_addr=0x1000)
 
@@ -73,7 +61,6 @@ class TestSimpleCore:
         assert inst.imm == 42
 
     def test_assemble_with_labels(self):
-        """Test assembly with labels"""
         core = SimpleCore()
         code = """
         start:
@@ -87,7 +74,6 @@ class TestSimpleCore:
         assert core.labels["start"] == 0x1000
 
     def test_execute_mov(self):
-        """Test MOV execution"""
         mem = Memory(size=64 * 1024)
         core = SimpleCore(memory=mem)
 
@@ -98,7 +84,6 @@ class TestSimpleCore:
         assert core.state.get_reg(0) == 123
 
     def test_execute_add(self):
-        """Test ADD execution"""
         mem = Memory(size=64 * 1024)
         core = SimpleCore(memory=mem)
 
@@ -115,7 +100,6 @@ class TestSimpleCore:
         assert core.state.get_reg(0) == 30
 
     def test_execute_loop(self):
-        """Test loop execution (1+2+...+10 = 55)"""
         mem = Memory(size=64 * 1024)
         core = SimpleCore(memory=mem)
 
@@ -136,7 +120,6 @@ class TestSimpleCore:
         assert core.state.get_reg(0) == 55
 
     def test_execution_log(self):
-        """Test execution logging"""
         mem = Memory(size=64 * 1024)
         core = SimpleCore(memory=mem)
 
@@ -152,20 +135,74 @@ class TestSimpleCore:
 
         log = core.get_execution_log()
         assert len(log) == 4
-        assert log[0]["opcode"] == "MOV"
-        assert log[0]["rd"] == 0
-        assert log[2]["opcode"] == "ADD"
+        assert log[0]["instruction"] == "MOV R0, #1"
+        assert log[2]["instruction"] == "ADD R0, R0, R1"
+
+
+class TestMemoryTranslation:
+    """Tests for memory translation"""
+
+    def test_ldr_str_with_page_table(self):
+        """Test LDR/STR with page table translation"""
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+        core = SimpleCore(memory=mem, memory_manager=mm)
+
+        # 创建页表：VA 0x1000 -> PA 0x2000
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
+        pt.map(0x1000, 0x2000)
+
+        # 写入数据到物理地址
+        mem.write_word(0x2000, 0xDEADBEEF)
+
+        # 设置 memtable_chain
+        core.memtable_chain = [0x10000]
+
+        # 测试 LDR
+        core.load_assembly("""
+            MOV R1, #0x1000
+            LDR R0, [R1]
+            HALT
+        """, base_addr=0x3000)
+        core.state.pc = 0x3000
+        core.run()
+
+        assert core.state.get_reg(0) == 0xDEADBEEF
+
+    def test_str_with_page_table(self):
+        """Test STR with page table translation"""
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+        core = SimpleCore(memory=mem, memory_manager=mm)
+
+        # 创建页表
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
+        pt.map(0x1000, 0x2000)
+
+        core.memtable_chain = [0x10000]
+
+        core.load_assembly("""
+            MOV R0, #0xCAFEBABE
+            MOV R1, #0x1000
+            STR R0, [R1]
+            HALT
+        """, base_addr=0x3000)
+        core.state.pc = 0x3000
+        core.run()
+
+        # 验证写入到翻译后的地址
+        assert mem.read_word(0x2000) == 0xCAFEBABE
+        # 原虚拟地址不应有数据
+        assert mem.read_word(0x1000) == 0
 
 
 class TestDomainExecution:
     """Tests for domain execution with descend/escalate"""
 
     def test_descend_escalate_simulation(self):
-        """Test descend and escalate instruction simulation"""
         mem = Memory(size=1024 * 1024)
         core = SimpleCore(memory=mem)
 
-        # Domain code: calculate and escalate
         code = """
             MOV R0, #42
             MOV R1, #100
@@ -190,10 +227,9 @@ class TestDomainExecution:
         assert core.state.get_reg(0) == 142
 
     def test_memory_isolation_simulation(self):
-        """Test memory isolation between domains"""
         mem = Memory(size=1024 * 1024)
 
-        # Domain A code at 0x0000
+        # Domain A
         core_a = SimpleCore(memory=mem)
         core_a.load_assembly("""
             MOV R0, #100
@@ -204,7 +240,7 @@ class TestDomainExecution:
         """, base_addr=0x0000)
         core_a.state.set_reg(3, 0x0100)
 
-        # Domain B code at 0x8000
+        # Domain B
         core_b = SimpleCore(memory=mem)
         core_b.load_assembly("""
             MOV R4, #1000
@@ -221,15 +257,12 @@ class TestDomainExecution:
 
         core_b.escalate_handler = escalate_handler
 
-        # Run domain A
         core_a.state.pc = 0x0000
         core_a.run()
 
-        # Run domain B
         core_b.state.pc = 0x8000
         core_b.run()
 
-        # Verify isolation
         assert core_a.state.get_reg(2) == 300
         assert core_b.state.get_reg(6) == 3000
         assert mem.read_word(0x0100) == 300

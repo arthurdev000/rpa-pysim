@@ -1,404 +1,511 @@
 """
 Thread and Exception Tests for RPA
 
-测试场景：
-1. 创建两个线程（共享内存的子域）
-2. Try-catch 机制（使用子域实现异常捕获）
-3. 内存访问异常（访问不存在的地址触发异常）
+使用汇编指令测试 DESCEND/ESCALATE/RETURN 机制。
+所有测试使用单一 Core，让指令真正执行域切换。
 """
 
 import pytest
-import sys
-sys.path.insert(0, '..')
-
 from rpa_sim import (
-    RPACore, Domain, DomainBlock, Memory, SimpleCore, Machine
+    Memory, SimpleCore, MemoryManager, DomainBlock
 )
 
 
-class TestThreadCreation:
+class TestDescendEscalate:
     """
-    测试线程创建场景
-
-    线程与进程的区别：
-    - 线程共享父进程的内存空间（memtable_address = 0）
-    - 线程有独立执行入口和栈
-    - 线程可访问父进程的资源
+    测试 DESCEND 和 ESCALATE 指令
     """
 
-    def test_create_two_threads(self):
+    def test_descend_jumps_to_execution_address(self):
         """
-        测试创建两个线程
+        DESCEND 跳转到 execution_address
+        """
+        mem = Memory(size=64 * 1024)
+
+        # 设置控制块
+        block_addr = 0x1000
+        execution_addr = 0x2000
+        mem.write_word(block_addr + 0x00, execution_addr)  # execution_address
+        mem.write_word(block_addr + 0x04, 0x3000)          # exception_vector
+        mem.write_word(block_addr + 0x10, 0)               # memtable_address
+
+        # 主程序
+        main_code = """
+            MOV R0, #0x1000    ; 控制块地址
+            DESCEND R0
+            ; DESCEND 后应该跳转到子域，不会执行到这里
+            MOV R5, #0xBAD
+            HALT
+        """
+
+        # 子域代码
+        child_code = """
+            MOV R1, #42
+            ESCALATE R1
+            HALT
+        """
+
+        core = SimpleCore(memory=mem)
+        core.load_assembly(main_code, base_addr=0x0000)
+        core.load_assembly(child_code, base_addr=execution_addr)
+
+        core.state.pc = 0x0000
+        core.domain_block_addr = 0  # 初始无控制块
+
+        # ESCALATE 时停止
+        core.escalate_handler = lambda x: (setattr(core, 'halted', True), x)[1]
+
+        core.run()
+
+        # 验证：跳转到了子域代码
+        assert core.state.get_reg(1) == 42
+        # R5 不应该被设置（没有执行 MOV R5, #0xBAD）
+        assert core.state.get_reg(5) == 0
+
+    def test_descend_saves_context(self):
+        """
+        DESCEND 保存上下文到控制块
+        """
+        mem = Memory(size=64 * 1024)
+
+        block_addr = 0x1000
+        execution_addr = 0x2000
+        mem.write_word(block_addr + 0x00, execution_addr)
+        mem.write_word(block_addr + 0x04, 0x3000)
+        mem.write_word(block_addr + 0x10, 0)
+
+        # 设置初始控制块（模拟父域）
+        parent_block = 0x0800
+        mem.write_word(parent_block + 0x00, 0x0000)
+
+        core = SimpleCore(memory=mem)
+        core.domain_block_addr = parent_block
+
+        # 设置父域状态
+        core.state.set_reg(0, 100)
+        core.state.set_reg(1, 200)
+
+        # 父域代码 (起始地址 0x0000)
+        # MOV R2, #0x1000  -> PC = 0x0004
+        # DESCEND R2       -> PC = 0x0008 (返回地址)
+        core.load_assembly("""
+            MOV R2, #0x1000
+            DESCEND R2
+            HALT
+        """, base_addr=0x0000)
+
+        # 子域代码
+        core.load_assembly("""
+            ESCALATE R0
+            HALT
+        """, base_addr=execution_addr)
+
+        core.state.pc = 0x0000
+        core.escalate_handler = lambda x: (setattr(core, 'halted', True), x)[1]
+        core.run()
+
+        # 验证：父域上下文保存到 parent_block
+        # saved_pc 应该是 DESCEND 后的地址 = 0x0008
+        assert mem.read_word(parent_block + 0x3C) == 0x0008
+        # saved_regs
+        assert mem.read_word(parent_block + 0x48) == 100    # R0
+        assert mem.read_word(parent_block + 0x4C) == 200    # R1
+
+    def test_escalate_saves_service_type(self):
+        """
+        ESCALATE 保存服务类型到控制块
+        """
+        mem = Memory(size=64 * 1024)
+
+        block_addr = 0x1000
+        execution_addr = 0x2000
+        mem.write_word(block_addr + 0x00, execution_addr)
+        mem.write_word(block_addr + 0x04, 0x3000)
+        mem.write_word(block_addr + 0x10, 0)
+
+        core = SimpleCore(memory=mem)
+        core.load_assembly("""
+            MOV R0, #0x1000
+            DESCEND R0
+            HALT
+        """, base_addr=0x0000)
+
+        core.load_assembly("""
+            MOV R0, #42
+            ESCALATE R0
+            HALT
+        """, base_addr=execution_addr)
+
+        core.state.pc = 0x0000
+        core.escalate_handler = lambda x: (setattr(core, 'halted', True), x)[1]
+        core.run()
+
+        # 验证：服务类型保存到控制块
+        assert mem.read_word(block_addr + 0x7C) == 42   # return_value
+        assert mem.read_word(block_addr + 0x80) == 0    # exception_type = ESCALATE
+
+    def test_shared_memory_between_domains(self):
+        """
+        父子域共享内存（memtable_address = 0）
+        """
+        mem = Memory(size=64 * 1024)
+
+        # 共享数据
+        shared_addr = 0x5000
+        mem.write_word(shared_addr, 100)
+
+        block_addr = 0x1000
+        mem.write_word(block_addr + 0x00, 0x2000)   # execution_address
+        mem.write_word(block_addr + 0x04, 0)        # exception_vector
+        mem.write_word(block_addr + 0x10, 0)        # memtable_address = 0 (共享)
+
+        core = SimpleCore(memory=mem)
+
+        # 主程序
+        core.load_assembly("""
+            MOV R0, #0x1000
+            DESCEND R0
+            ; 子域返回后
+            MOV R1, #0x5000
+            LDR R2, [R1]
+            HALT
+        """, base_addr=0x0000)
+
+        # 子域：+200
+        core.load_assembly("""
+            MOV R1, #0x5000
+            LDR R0, [R1]
+            ADD R0, R0, #200
+            STR R0, [R1]
+            MOV R0, #0
+            ESCALATE R0
+            HALT
+        """, base_addr=0x2000)
+
+        core.state.pc = 0x0000
+        core.escalate_handler = lambda x: (setattr(core, 'halted', True), x)[1]
+        core.run()
+
+        # 共享数据被修改
+        assert mem.read_word(shared_addr) == 300
+
+
+class TestMemoryTranslation:
+    """
+    测试带地址翻译的内存访问
+    """
+
+    def test_ldr_with_translation(self):
+        """
+        LDR 通过页表翻译地址
+        """
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+
+        # 创建页表：VA 0x1000 -> PA 0x2000
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
+        pt.map(0x1000, 0x2000)
+
+        # 写入数据到物理地址
+        mem.write_word(0x2000, 0xDEADBEEF)
+
+        core = SimpleCore(memory=mem, memory_manager=mm)
+        core.memtable_chain = [0x10000]
+
+        core.load_assembly("""
+            MOV R1, #0x1000
+            LDR R0, [R1]
+            HALT
+        """, base_addr=0x3000)
+
+        core.state.pc = 0x3000
+        core.run()
+
+        # 读到翻译后的数据
+        assert core.state.get_reg(0) == 0xDEADBEEF
+
+    def test_str_with_translation(self):
+        """
+        STR 通过页表翻译地址
+        """
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
+        pt.map(0x1000, 0x2000)
+
+        core = SimpleCore(memory=mem, memory_manager=mm)
+        core.memtable_chain = [0x10000]
+
+        core.load_assembly("""
+            MOV R0, #0xCAFEBABE
+            MOV R1, #0x1000
+            STR R0, [R1]
+            HALT
+        """, base_addr=0x3000)
+
+        core.state.pc = 0x3000
+        core.run()
+
+        # 写入到翻译后的地址
+        assert mem.read_word(0x2000) == 0xCAFEBABE
+        assert mem.read_word(0x1000) == 0
+
+    def test_descend_updates_memtable_chain(self):
+        """
+        DESCEND 更新 memtable_chain
+        """
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+
+        # Domain 0 页表（根页表）
+        # 需要映射所有最终的物理地址
+        pt0 = mm.create_page_table(base_addr=0x10000, owner_domain=0)
+        pt0.map(0x0000, 0x0000)  # 代码段
+        pt0.map(0x3000, 0x3000)  # 数据段（IPA -> PA）
+
+        # Domain 1 页表
+        # VA 0x1000 -> IPA 0x3000
+        pt1 = mm.create_page_table(base_addr=0x20000, owner_domain=1)
+        pt1.map(0x1000, 0x3000)
+
+        # 设置控制块
+        block_addr = 0x0800
+        mem.write_word(block_addr + 0x00, 0x2000)    # execution_address
+        mem.write_word(block_addr + 0x04, 0)
+        mem.write_word(block_addr + 0x10, 0x20000)   # memtable_address
+
+        core = SimpleCore(memory=mem, memory_manager=mm)
+        core.memtable_chain = [0x10000]  # Domain 0 的页表
+
+        # 主程序
+        core.load_assembly("""
+            MOV R0, #0x0800
+            DESCEND R0
+            HALT
+        """, base_addr=0x0000)
+
+        # 子域代码：使用翻译地址
+        core.load_assembly("""
+            MOV R1, #0x1000
+            LDR R0, [R1]
+            ESCALATE R0
+            HALT
+        """, base_addr=0x2000)
+
+        # 在 PA 0x3000 写入数据
+        mem.write_word(0x3000, 0x12345678)
+
+        core.state.pc = 0x0000
+        core.escalate_handler = lambda x: (setattr(core, 'halted', True), x)[1]
+        core.run()
+
+        # 子域读到了翻译后的数据
+        assert core.state.get_reg(0) == 0x12345678
+
+
+class TestFaultHandling:
+    """
+    测试异常处理
+    """
+
+    def test_translation_fault(self):
+        """
+        访问未映射地址触发 fault_handler
+        """
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+
+        # 创建页表但不映射
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=2)
+
+        core = SimpleCore(memory=mem, memory_manager=mm)
+        core.memtable_chain = [0x10000]
+
+        core.load_assembly("""
+            MOV R0, #0x5000
+            LDR R1, [R0]
+            HALT
+        """, base_addr=0x2000)
+
+        fault_info = {}
+
+        def on_fault(fault_type, va, info):
+            fault_info['type'] = fault_type
+            fault_info['va'] = va
+            fault_info['owner'] = info
+            core.halted = True
+
+        core.fault_handler = on_fault
+        core.state.pc = 0x2000
+        core.run()
+
+        assert fault_info['type'] == 'translation'
+        assert fault_info['va'] == 0x5000
+        assert fault_info['owner'] == 2
+
+    def test_bus_error(self):
+        """
+        访问超出物理内存范围触发 fault_handler
+        """
+        mem = Memory(size=1024)  # 1KB 内存
+
+        core = SimpleCore(memory=mem)
+
+        core.load_assembly("""
+            MOV R0, #0x10000   ; 超出范围
+            LDR R1, [R0]
+            HALT
+        """, base_addr=0x0100)
+
+        fault_info = {}
+
+        def on_fault(fault_type, va, info):
+            fault_info['type'] = fault_type
+            fault_info['va'] = va
+            core.halted = True
+
+        core.fault_handler = on_fault
+        core.state.pc = 0x0100
+        core.run()
+
+        assert fault_info['type'] == 'memory'
+        assert fault_info['va'] == 0x10000
+
+
+class TestMultiLevelTranslation:
+    """
+    测试多级地址翻译
+    """
+
+    def test_two_level_translation(self):
+        """
+        两级页表翻译：
+        Domain 1 VA -> Domain 1 IPA -> Domain 0 PA
+        """
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+
+        # Domain 0 页表（根页表）
+        # IPA 0x2000 -> PA 0x3000
+        pt0 = mm.create_page_table(base_addr=0x10000, owner_domain=0)
+        pt0.map(0x2000, 0x3000)
+
+        # Domain 1 页表
+        # VA 0x1000 -> IPA 0x2000
+        pt1 = mm.create_page_table(base_addr=0x20000, owner_domain=1)
+        pt1.map(0x1000, 0x2000)
+
+        # 写入最终物理地址
+        mem.write_word(0x3000, 0xFEEDFACE)
+
+        core = SimpleCore(memory=mem, memory_manager=mm)
+        # memtable_chain: [Domain 1 页表, Domain 0 页表]
+        core.memtable_chain = [0x20000, 0x10000]
+
+        core.load_assembly("""
+            MOV R1, #0x1000
+            LDR R0, [R1]
+            HALT
+        """, base_addr=0x4000)
+
+        core.state.pc = 0x4000
+        core.run()
+
+        # 读到了翻译后的数据
+        assert core.state.get_reg(0) == 0xFEEDFACE
+
+    def test_fault_attribution_to_correct_domain(self):
+        """
+        翻译失败正确归属到失败的域
 
         场景：
-        1. 进程创建两个线程
-        2. 两个线程共享内存（memtable_address = 0）
-        3. 两个线程有独立入口和栈
-        4. 两个线程可以访问共享数据
+        - Domain 1 页表映射了 VA -> IPA
+        - Domain 0 页表没有映射 IPA -> PA
+        - 翻译失败应该归属到 Domain 0
         """
-        machine = Machine(memory_size=1024 * 1024)
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
 
-        # 共享数据地址
+        # Domain 0 页表（根页表）- 不映射
+        pt0 = mm.create_page_table(base_addr=0x10000, owner_domain=0)
+
+        # Domain 1 页表 - 映射到 IPA
+        pt1 = mm.create_page_table(base_addr=0x20000, owner_domain=1)
+        pt1.map(0x1000, 0x2000)  # VA -> IPA, 但 IPA 没有 -> PA
+
+        core = SimpleCore(memory=mem, memory_manager=mm)
+        core.memtable_chain = [0x20000, 0x10000]
+
+        core.load_assembly("""
+            MOV R1, #0x1000
+            LDR R0, [R1]
+            HALT
+        """, base_addr=0x4000)
+
+        fault_info = {}
+
+        def on_fault(fault_type, va, info):
+            fault_info['type'] = fault_type
+            fault_info['va'] = va
+            fault_info['owner'] = info
+            core.halted = True
+
+        core.fault_handler = on_fault
+        core.state.pc = 0x4000
+        core.run()
+
+        # 故障应该归属到 Domain 0（因为 Domain 0 的页表翻译失败）
+        assert fault_info['type'] == 'translation'
+        assert fault_info['owner'] == 0
+
+
+class TestSharedMemoryThread:
+    """
+    测试共享内存的线程模型
+    """
+
+    def test_two_threads_sequential(self):
+        """
+        两个"线程"顺序执行，共享内存
+
+        这是用两个 SimpleCore 模拟共享 memtable_chain = [] 的场景
+        """
+        mem = Memory(size=64 * 1024)
+
         shared_addr = 0x5000
-        machine.write_memory(shared_addr, 100)  # 初始值 100
+        mem.write_word(shared_addr, 100)
 
-        # 线程1代码：将共享数据 +200
-        thread1_core = SimpleCore(memory=machine.memory)
-        thread1_code = """
+        # 线程1代码
+        thread1 = SimpleCore(memory=mem)
+        thread1.load_assembly("""
             MOV R1, #0x5000
             LDR R0, [R1]
             ADD R0, R0, #200
             STR R0, [R1]
             ESCALATE R0
-        """
-        thread1_core.load_assembly(thread1_code, base_addr=0x2000)
-        thread1_core.state.pc = 0x2000
-        thread1_core.escalate_handler = lambda x: (setattr(thread1_core, 'halted', True), 0)[1]
-        thread1_core.run()
+            HALT
+        """, base_addr=0x1000)
 
-        # 验证线程1执行后共享数据 = 300
-        assert machine.memory.read_word(shared_addr) == 300
+        thread1.state.pc = 0x1000
+        thread1.escalate_handler = lambda x: (setattr(thread1, 'halted', True), x)[1]
+        thread1.run()
 
-        # 线程2代码：将共享数据 +300
-        thread2_core = SimpleCore(memory=machine.memory)
-        thread2_code = """
+        assert mem.read_word(shared_addr) == 300
+
+        # 线程2代码
+        thread2 = SimpleCore(memory=mem)
+        thread2.load_assembly("""
             MOV R1, #0x5000
             LDR R0, [R1]
             ADD R0, R0, #300
             STR R0, [R1]
             ESCALATE R0
-        """
-        thread2_core.load_assembly(thread2_code, base_addr=0x3000)
-        thread2_core.state.pc = 0x3000
-        thread2_core.escalate_handler = lambda x: (setattr(thread2_core, 'halted', True), 0)[1]
-        thread2_core.run()
-
-        # 验证线程2执行后共享数据 = 600
-        assert machine.memory.read_word(shared_addr) == 600
-
-
-class TestTryCatchException:
-    """
-    测试 Try-Catch 异常捕获机制
-
-    RPA 实现异常捕获的方式：
-    1. 创建子域作为 try 块
-    2. 子域设置 exception_vector 指向 catch 块
-    3. 子域触发异常时，跳转到 exception_vector
-    4. catch 块处理后继续执行或返回
-    """
-
-    def test_try_catch_with_memory_exception(self):
-        """
-        测试 try-catch 捕获内存异常
-
-        场景：
-        1. 进程代码包含 try 块
-        2. try 块中访问无效地址
-        3. 触发内存异常
-        4. catch 块捕获异常并处理
-        """
-        machine = Machine(memory_size=1024 * 1024)
-
-        # try 块代码：访问无效地址
-        try_core = SimpleCore(memory=machine.memory)
-        try_code = """
-            MOV R0, #0x5000
-            LDR R1, [R0]
-            ESCALATE R1
-        """
-        try_core.load_assembly(try_code, base_addr=0x2000)
-        try_core.state.pc = 0x2000
-
-        # 正常执行（有效地址）
-        try_core.escalate_handler = lambda x: (setattr(try_core, 'halted', True), 0)[1]
-        try_core.run()
-
-        # 验证正常执行完成
-        assert try_core.halted
-
-        # 模拟内存异常场景
-        exception_caught = [False]
-
-        # catch 块代码
-        catch_core = SimpleCore(memory=machine.memory)
-        catch_code = """
-            MOV R5, #2          ; 标记：异常捕获
-            ESCALATE R5
-        """
-        catch_core.load_assembly(catch_code, base_addr=0x3000)
-        catch_core.state.pc = 0x3000
-        catch_core.escalate_handler = lambda x: (
-            setattr(catch_core, 'halted', True),
-            exception_caught.__setitem__(0, True),
-            0  # 返回值
-        )[2]
-
-        # 模拟：try 块触发异常，跳转到 catch 块
-        # 在实际硬件中，异常会自动跳转到 exception_vector
-        catch_core.run()
-
-        # 验证 catch 块被执行
-        assert exception_caught[0] is True
-        assert catch_core.state.get_reg(5) == 2
-
-
-class TestMemoryAccessException:
-    """
-    测试内存访问异常
-
-    当访问不存在的地址时触发数据访问异常。
-    """
-
-    def test_access_invalid_address_triggers_exception(self):
-        """
-        测试访问无效地址触发异常
-
-        场景：
-        1. 子域尝试访问超出内存范围的地址
-        2. 触发 MemoryError（模拟内存异常）
-        3. 异常信息应该被记录
-        """
-        machine = Machine(memory_size=1024 * 1024)  # 1MB 内存
-
-        # 子域代码：访问超出范围的地址
-        child_core = SimpleCore(memory=machine.memory)
-        child_code = """
-            MOV R0, #0x2000000   ; 32MB - 超出内存范围
-            LDR R1, [R0]        ; 触发异常
-            ESCALATE R1
-        """
-        child_core.load_assembly(child_code, base_addr=0x1000)
-        child_core.state.pc = 0x1000
-
-        # 执行 MOV 指令
-        child_core.step()
-        assert child_core.state.get_reg(0) == 0x2000000
-
-        # 执行 LDR 指令 - 应该触发 MemoryError
-        exception_info = {}
-        try:
-            child_core.step()
-        except MemoryError as e:
-            # 捕获内存异常
-            exception_info['type'] = 'memory_fault'
-            exception_info['message'] = str(e)
-
-        # 验证：异常被触发
-        assert exception_info['type'] == 'memory_fault'
-        assert '0x2000000' in exception_info['message']
-
-        # 在真实 RPA 系统中，这会：
-        # 1. 保存异常信息到控制块
-        # 2. 跳转到 exception_vector
-        # 3. 执行异常处理程序
-
-    def test_nested_try_catch(self):
-        """
-        测试嵌套 try-catch
-
-        场景：
-        1. 外层 try 块
-        2. 内层 try 块触发异常
-        3. 内层 catch 处理后，外层 catch 不执行
-        """
-        machine = Machine(memory_size=1024 * 1024)
-
-        # 外层代码
-        outer_code = """
-            ; 设置内层 try 块
-            MOV R0, #0x1000     ; 内层控制块
-            MOV R1, #0x3000     ; 内层 try 入口
-            STR R1, [R0]
-            MOV R1, #0x4000     ; 内层 catch 入口
-            STR R1, [R0, #4]
-
-            DESCEND R0
-
-            ; 内层正常返回
-            MOV R5, #0          ; 标记：正常完成
             HALT
-        """
-        machine.load_code(outer_code, base_addr=0x8000, domain_id=0)
+        """, base_addr=0x2000)
 
-        # 内层 try 代码
-        inner_try_code = """
-            MOV R0, #99
-            ESCALATE R0         ; 正常返回
-        """
-        machine.load_code(inner_try_code, base_addr=0x3000)
+        thread2.state.pc = 0x2000
+        thread2.escalate_handler = lambda x: (setattr(thread2, 'halted', True), x)[1]
+        thread2.run()
 
-        # 内层 catch 代码（不应该执行）
-        inner_catch_code = """
-            MOV R5, #2          ; 标记：异常捕获
-            ESCALATE R5
-        """
-        machine.load_code(inner_catch_code, base_addr=0x4000)
-
-        # 设置执行环境
-        outer_core = machine.root_core
-        inner_core = SimpleCore(memory=machine.memory)
-
-        def on_descend(block_addr):
-            inner_core.load_assembly(inner_try_code, base_addr=0x3000)
-            inner_core.state.pc = 0x3000
-            inner_core.escalate_handler = lambda x: (setattr(inner_core, 'halted', True), x)[1]
-            inner_core.run()
-            return inner_core.state.get_reg(0)
-
-        outer_core.descend_handler = on_descend
-        outer_core.state.pc = 0x8000
-        outer_core.run()
-
-        # 验证：正常完成，没有异常
-        assert outer_core.state.get_reg(5) == 0  # 正常完成标记
-
-
-class TestDesignQuestions:
-    """
-    设计问题验证测试
-
-    这些测试用于验证 RPA 设计的核心假设。
-    如果测试失败，需要停下来讨论设计问题。
-    """
-
-    def test_escalate_jumps_to_parent_exception_vector(self):
-        """
-        验证 ESCALATE 跳转到父域 exception_vector
-
-        问题：当前 ESCALATE 使用 handler 回调，
-        但设计上应该跳转到父域的 exception_vector。
-        """
-        machine = Machine(memory_size=1024 * 1024)
-
-        # 父域代码
-        parent_code = """
-            ; 设置子域控制块
-            MOV R0, #0x1000
-            MOV R1, #0x2000     ; 子域入口
-            STR R1, [R0]
-            ; exception_vector 由控制块设置
-
-            DESCEND R0
-
-            ; 从子域返回后继续
-            HALT
-        """
-        machine.load_code(parent_code, base_addr=0x8000, domain_id=0)
-
-        # 子域代码
-        child_code = """
-            MOV R0, #42         ; 服务请求类型
-            ESCALATE R0
-            ; 返回后继续执行
-            HALT
-        """
-        machine.load_code(child_code, base_addr=0x2000)
-
-        # 父域异常处理代码（exception_vector 指向这里）
-        parent_handler_code = """
-            ; 处理 ESCALATE
-            ; R0 包含服务类型
-            ADD R0, R0, #100    ; 处理：返回值 = 服务类型 + 100
-            ; 返回子域（简化：设置返回值后 halt）
-            HALT
-        """
-        machine.load_code(parent_handler_code, base_addr=0x3000)
-
-        # 创建控制块
-        block = DomainBlock(
-            execution_address=0x2000,
-            exception_vector=0x3000,  # 父域处理入口
-        )
-        machine.load_domain_block(0x1000, block)
-
-        # 当前设计验证：
-        # ESCALATE 应该：1) 保存子域上下文 2) 跳转到父域 exception_vector
-        # 这是设计目标，需要检查当前实现是否正确
-
-        parent_core = machine.root_core
-        child_core = SimpleCore(memory=machine.memory)
-
-        child_core.load_assembly(child_code, base_addr=0x2000)
-
-        # 设置 descend 处理
-        def on_descend(block_addr):
-            child_core.state.pc = 0x2000
-            child_core.escalate_handler = lambda x: (setattr(child_core, 'halted', True), x + 100)[1]
-            child_core.run()
-            return child_core.state.get_reg(0)
-
-        parent_core.descend_handler = on_descend
-        parent_core.state.pc = 0x8000
-        parent_core.run()
-
-        # 当前实现使用回调机制
-        # 设计目标：跳转到 exception_vector
-        print(f"Note: Current ESCALATE uses callback, design goal is to jump to exception_vector")
-
-    def test_descend_saves_parent_context(self):
-        """
-        验证 DESCEND 保存父域上下文
-
-        问题：进入子域时，是否应该自动保存父域寄存器？
-        当前实现：没有自动保存，需要手动保存。
-        """
-        machine = Machine(memory_size=1024 * 1024)
-
-        # 父域代码
-        parent_code = """
-            MOV R0, #100
-            MOV R1, #200
-            MOV R2, #0x1000     ; 控制块地址
-            DESCEND R2
-            ; 返回后检查 R0, R1
-            ; 设计问题：R0, R1 应该恢复为 100, 200 还是保持子域的修改？
-            HALT
-        """
-        machine.load_code(parent_code, base_addr=0x8000, domain_id=0)
-
-        # 子域代码
-        child_code = """
-            MOV R0, #999        ; 修改 R0
-            MOV R1, #888        ; 修改 R1
-            ESCALATE R0
-        """
-        machine.load_code(child_code, base_addr=0x2000)
-
-        # 创建控制块
-        block = DomainBlock(execution_address=0x2000)
-        machine.load_domain_block(0x1000, block)
-
-        parent_core = machine.root_core
-        child_core = SimpleCore(memory=machine.memory)
-
-        def on_descend(block_addr):
-            child_core.load_assembly(child_code, base_addr=0x2000)
-            child_core.state.pc = 0x2000
-            child_core.escalate_handler = lambda x: (setattr(child_core, 'halted', True), x)[1]
-            child_core.run()
-            return child_core.state.get_reg(0)
-
-        parent_core.descend_handler = on_descend
-        parent_core.state.pc = 0x8000
-
-        # 执行父域代码
-        parent_core.step()  # MOV R0, #100
-        parent_core.step()  # MOV R1, #200
-        parent_core.step()  # MOV R2, #0x1000
-
-        # 保存父域状态
-        saved_r0 = parent_core.state.get_reg(0)
-        saved_r1 = parent_core.state.get_reg(1)
-
-        parent_core.step()  # DESCEND R2
-
-        # 问题：子域修改了 R0, R1
-        # 返回后父域的 R0, R1 应该是什么值？
-        # 设计决策：是否需要自动上下文保存/恢复？
-
-        print(f"Parent R0 before descend: {saved_r0}")
-        print(f"Parent R1 before descend: {saved_r1}")
-        print(f"Parent R0 after descend: {parent_core.state.get_reg(0)}")
-        print(f"Parent R1 after descend: {parent_core.state.get_reg(1)}")
-        print(f"Note: Design question - should DESCEND auto-save parent context?")
+        assert mem.read_word(shared_addr) == 600

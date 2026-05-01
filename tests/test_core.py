@@ -1,16 +1,15 @@
 """
-RPA Core Tests - Basic functionality tests for the refactored API
+RPA Core Tests - Basic functionality tests
 """
 
 import pytest
-from rpa_sim import RPACore, Domain, DomainBlock, Memory, SimpleCore
+from rpa_sim import RPACore, Domain, DomainBlock, Memory, SimpleCore, MemoryManager
 
 
 class TestDomainBlock:
     """Tests for DomainBlock"""
 
     def test_create_block(self):
-        """Test creating a domain block"""
         block = DomainBlock(
             execution_address=0x1000,
             exception_vector=0x2000,
@@ -25,14 +24,12 @@ class TestDomain:
     """Tests for Domain"""
 
     def test_create_domain(self):
-        """Test creating a domain"""
         block = DomainBlock(execution_address=0x8000)
         domain = Domain(domain_id=0, block=block)
         assert domain.domain_id == 0
         assert len(domain.children) == 0
 
     def test_add_child(self):
-        """Test adding child domains"""
         block = DomainBlock(execution_address=0x8000)
         parent = Domain(domain_id=0, block=block)
 
@@ -49,13 +46,11 @@ class TestRPACore:
     """Tests for RPACore"""
 
     def test_create_core(self):
-        """Test creating RPA core"""
         rpa = RPACore()
         assert rpa.current_domain is rpa.root_domain
         assert rpa.get_depth() == 0
 
     def test_configure_child(self):
-        """Test configuring a child domain"""
         rpa = RPACore()
 
         child_block = DomainBlock(
@@ -68,25 +63,21 @@ class TestRPACore:
         assert len(rpa.root_domain.children) == 1
 
     def test_descend_needs_memory(self):
-        """Test descend requires memory"""
         rpa = RPACore()
 
         child_block = DomainBlock(execution_address=0x1000)
         rpa.configure_child(rpa.root_domain, child_block)
 
-        # descend requires memory to read DomainBlock
         with pytest.raises(RuntimeError, match="Memory not set"):
             rpa.descend(0x1000)
 
     def test_escalate_from_root_fails(self):
-        """Test that escalating from root fails"""
         rpa = RPACore()
 
         with pytest.raises(RuntimeError, match="Cannot escalate from root"):
             rpa.escalate(0)
 
     def test_stats(self):
-        """Test statistics tracking"""
         rpa = RPACore()
         stats = rpa.get_stats()
         assert stats["descend_count"] == 0
@@ -97,7 +88,6 @@ class TestSimpleCore:
     """Tests for SimpleCore"""
 
     def test_execute_mov(self):
-        """Test MOV instruction"""
         mem = Memory(size=64 * 1024)
         core = SimpleCore(memory=mem)
 
@@ -108,7 +98,6 @@ class TestSimpleCore:
         assert core.state.get_reg(0) == 123
 
     def test_execute_add(self):
-        """Test ADD instruction"""
         mem = Memory(size=64 * 1024)
         core = SimpleCore(memory=mem)
 
@@ -126,38 +115,45 @@ class TestSimpleCore:
     def test_descend_escalate(self):
         """Test DESCEND and ESCALATE instructions"""
         mem = Memory(size=64 * 1024)
+
+        # 设置控制块 - 地址不能和代码重叠
+        block_addr = 0x0800
+        child_entry = 0x2000
+        mem.write_word(block_addr + 0x00, child_entry)  # execution_address
+        mem.write_word(block_addr + 0x04, 0x3000)       # exception_vector
+        mem.write_word(block_addr + 0x10, 0)            # memtable_address
+
         core = SimpleCore(memory=mem)
 
-        # Set up handlers
-        descend_result = [0]
-        escalate_result = [0]
-
-        def on_descend(block_addr):
-            descend_result[0] = block_addr
-            return 42
-
-        def on_escalate(service_type):
-            escalate_result[0] = service_type
-            return 100
-
-        core.descend_handler = on_descend
-        core.escalate_handler = on_escalate
-
+        # 主程序
         core.load_assembly("""
-            MOV R0, #0x1000
+            MOV R0, #0x0800
             DESCEND R0
+            HALT
+        """, base_addr=0x1000)
+
+        # 子域代码
+        core.load_assembly("""
             MOV R1, #5
             ESCALATE R1
             HALT
-        """, base_addr=0x1000)
+        """, base_addr=child_entry)
+
+        escalate_result = [0]
+
+        def on_escalate(service_type):
+            escalate_result[0] = service_type
+            core.halted = True
+            return service_type
+
+        core.escalate_handler = on_escalate
         core.state.pc = 0x1000
         core.run()
 
-        assert descend_result[0] == 0x1000
+        # ESCALATE 被调用，传入 R1 的值
         assert escalate_result[0] == 5
 
     def test_sysop(self):
-        """Test SYSOP instruction"""
         mem = Memory(size=64 * 1024)
         core = SimpleCore(memory=mem)
 
@@ -176,15 +172,90 @@ class TestSimpleCore:
         core.state.pc = 0x1000
         core.run()
 
-        # op=1 (IRQ), subop=1 (READ), arg1=1, arg2=0
         assert sysop_result[0] == (1, 1, 1, 0)
+
+
+class TestMemoryTranslation:
+    """Tests for memory translation in SimpleCore"""
+
+    def test_ldr_without_translation(self):
+        """Test LDR without page table (VA = PA)"""
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+        core = SimpleCore(memory=mem, memory_manager=mm)
+
+        # 写入测试数据
+        mem.write_word(0x1000, 0x12345678)
+
+        core.load_assembly("""
+            MOV R1, #0x1000
+            LDR R0, [R1]
+            HALT
+        """, base_addr=0x2000)
+        core.state.pc = 0x2000
+        core.run()
+
+        assert core.state.get_reg(0) == 0x12345678
+
+    def test_ldr_with_translation(self):
+        """Test LDR with page table translation"""
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+        core = SimpleCore(memory=mem, memory_manager=mm)
+
+        # 创建页表：VA 0x1000 -> PA 0x2000
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
+        pt.map(0x1000, 0x2000)
+
+        # 写入数据到物理地址
+        mem.write_word(0x2000, 0xDEADBEEF)
+
+        # 设置 memtable_chain
+        core.memtable_chain = [0x10000]
+
+        core.load_assembly("""
+            MOV R1, #0x1000
+            LDR R0, [R1]
+            HALT
+        """, base_addr=0x3000)
+        core.state.pc = 0x3000
+        core.run()
+
+        # 读取的是翻译后的地址
+        assert core.state.get_reg(0) == 0xDEADBEEF
+
+    def test_str_with_translation(self):
+        """Test STR with page table translation"""
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+        core = SimpleCore(memory=mem, memory_manager=mm)
+
+        # 创建页表：VA 0x1000 -> PA 0x2000
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
+        pt.map(0x1000, 0x2000)
+
+        # 设置 memtable_chain
+        core.memtable_chain = [0x10000]
+
+        core.load_assembly("""
+            MOV R0, #0xDEADBEEF
+            MOV R1, #0x1000
+            STR R0, [R1]
+            HALT
+        """, base_addr=0x3000)
+        core.state.pc = 0x3000
+        core.run()
+
+        # 验证写入到翻译后的地址
+        assert mem.read_word(0x2000) == 0xDEADBEEF
+        # 原虚拟地址不应有数据
+        assert mem.read_word(0x1000) == 0
 
 
 class TestIntegration:
     """Integration tests"""
 
     def test_memory_and_core(self):
-        """Test memory and core integration"""
         mem = Memory(size=1024 * 1024)
         core = SimpleCore(memory=mem)
 
@@ -204,7 +275,6 @@ class TestIntegration:
         assert mem.read_word(0x0100) == 3
 
     def test_domain_block_in_memory(self):
-        """Test writing and reading DomainBlock from memory"""
         mem = Memory(size=1024 * 1024)
         rpa = RPACore()
         rpa.memory = mem
@@ -215,10 +285,7 @@ class TestIntegration:
             memtable_address=0x50000,
         )
 
-        # Write to memory
         rpa._write_domain_block(0x1000, block)
-
-        # Read back
         read_block = rpa._read_domain_block(0x1000)
 
         assert read_block.execution_address == 0x4000

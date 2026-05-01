@@ -4,123 +4,8 @@ SimpleCore - 简化指令集核心
 这是 RPA 架构的指令执行核心。每个 Domain 可以有不同的 ISA 实现，
 SimpleCore 是一个简化版的类 ARM 指令集，用于演示 RPA 的核心机制。
 
-核心概念：
-============
-
-        ┌─────────────────────────────────────────────────────────────────┐
-        │                        Domain 层级结构                           │
-        ├─────────────────────────────────────────────────────────────────┤
-        │                                                                 │
-        │    ┌──────────────────┐                                         │
-        │    │   Domain 0       │  ← 根域 (root_domain)                   │
-        │    │   (最高特权)      │                                         │
-        │    │                  │                                         │
-        │    │  ┌────────────┐  │                                         │
-        │    │  │ Domain 1   │  │  ← 子域                                 │
-        │    │  │            │  │                                         │
-        │    │  │ ┌────────┐ │  │                                         │
-        │    │  │ │Domain 2│ │  │  ← 孙域                                 │
-        │    │  │ └────────┘ │  │                                         │
-        │    │  └────────────┘  │                                         │
-        │    └──────────────────┘                                         │
-        │                                                                 │
-        └─────────────────────────────────────────────────────────────────┘
-
-        DESCEND: Domain 0 → Domain 1 → Domain 2 (向下进入子域)
-        ESCALATE: Domain 2 → Domain 1 → Domain 0 (向上请求服务)
-
-DomainBlock (控制块):
-====================
-
-        ┌────────────────────────────────────────────────────────────────┐
-        │                    DomainBlock 内存布局                         │
-        │                      (128 字节, 64字节对齐)                      │
-        ├────────────┬───────────────────────────────────────────────────┤
-        │ 偏移       │ 字段名                    │ 说明                  │
-        ├────────────┼───────────────────────────┼───────────────────────┤
-        │ 0x00       │ execution_address         │ 执行地址              │
-        │ 0x04       │ exception_vector          │ 异常向量              │
-        │ 0x08       │ interrupt_vector          │ 中断向量              │
-        │ 0x0C       │ interrupt_ctrl            │ 中断控制器            │
-        │ 0x10       │ memtable_address          │ 内存区域表地址        │
-        │ 0x14       │ status                    │ 状态码 (Decoder上报) │
-        │ 0x18       │ reserved                  │ 保留                  │
-        │ 0x1C       │ padding                   │ 填充 (对齐到0x20)    │
-        │ 0x14-0x7F  │ reserved                  │ 保留                  │
-        ├────────────┼───────────────────────────┼───────────────────────┤
-        │ 0x80       │ status                    │ 状态码 (Decoder上报)  │
-        └────────────┴───────────────────────────┴───────────────────────┘
-
-地址翻译流程:
-=============
-
-        ┌─────────────────────────────────────────────────────────────────┐
-        │                     地址翻译 (多级页表)                          │
-        ├─────────────────────────────────────────────────────────────────┤
-        │                                                                 │
-        │   Domain 2 的 VA                                                │
-        │        │                                                        │
-        │        ▼                                                        │
-        │   ┌─────────┐                                                   │
-        │   │ PT 2    │  ← Domain 2 的页表                                │
-        │   └────┬────┘                                                   │
-        │        │ 翻译                                                   │
-        │        ▼                                                        │
-        │   Domain 1 的 VA (实际上是 Domain 2 的 "PA")                    │
-        │        │                                                        │
-        │        ▼                                                        │
-        │   ┌─────────┐                                                   │
-        │   │ PT 1    │  ← Domain 1 的页表                                │
-        │   └────┬────┘                                                   │
-        │        │ 翻译                                                   │
-        │        ▼                                                        │
-        │   Domain 0 的 VA (实际上是 Domain 1 的 "PA")                    │
-        │        │                                                        │
-        │        ▼                                                        │
-        │   ┌─────────┐                                                   │
-        │   │ PT 0    │  ← Domain 0 的页表 (根页表)                       │
-        │   └────┬────┘                                                   │
-        │        │ 翻译                                                   │
-        │        ▼                                                        │
-        │   真正的物理地址 (PA)                                           │
-        │                                                                 │
-        │   如果任何一步翻译失败 → 触发缺页异常                           │
-        └─────────────────────────────────────────────────────────────────┘
-
-DESCEND/ESCALATE 流程:
-======================
-
-        DESCEND R0 (R0 = 控制块地址):
-
-        ┌──────────────┐                    ┌──────────────┐
-        │   父域       │                    │   子域       │
-        │              │                    │              │
-        │  1. 保存上下文到控制块            │              │
-        │  2. 读取子域 execution_address ────▶ 开始执行    │
-        │              │                    │              │
-        │              │                    │  ...执行...  │
-        │              │                    │              │
-        └──────────────┘                    └──────────────┘
-
-
-        ESCALATE R0 (R0 = 服务类型):
-
-        ┌──────────────┐                    ┌──────────────┐
-        │   父域       │                    │   子域       │
-        │              │                    │              │
-        │              │  1. 保存上下文到控制块            │
-        │              │  2. 写入服务类型到 return_value   │
-        │  跳转到      │◀───── 3. 切换到父域 ─────────────│
-        │  exception_  │                    │              │
-        │  vector      │                    │  (等待返回)  │
-        │              │                    │              │
-        │  4. 处理服务请求                   │              │
-        │  5. RETURN 返回 ──────────────────▶ 恢复执行    │
-        │              │                    │              │
-        └──────────────┘                    └──────────────┘
-
 支持的指令:
-===========
+============
 
 数据处理：MOV, ADD, SUB, CMP, AND, ORR
 加载存储：LDR, STR
@@ -128,13 +13,24 @@ DESCEND/ESCALATE 流程:
 RPA 指令：DESCEND, ESCALATE, RETURN, SYSOP
 特殊：NOP, HALT
 
-注意：这些指令是简化的示例指令，与真实架构指令相似但不完全相同。
+地址翻译:
+============
+
+    LDR/STR 通过 MemoryManager 进行地址翻译:
+
+    ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+    │   Core      │ VA   │ MemoryManager│ PA   │   Memory    │
+    │             │─────▶│ translate    │─────▶│             │
+    │  LDR/STR    │      │ chain        │      │  read/write │
+    └─────────────┘      └─────────────┘      └─────────────┘
+
+    memtable_chain = [domain_n.memtable, ..., domain_0.memtable]
+    翻译失败 → TranslationError(memtable_owner)
 """
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Callable, Any, Tuple
 from enum import Enum, auto
-import struct
 import re
 
 
@@ -160,9 +56,9 @@ class OpCode(Enum):
     BX = auto()
 
     # RPA 指令
-    DESCEND = auto()    # 进入子域
-    ESCALATE = auto()   # 请求父域服务
-    RETURN = auto()     # 返回子域
+    DESCEND = auto()
+    ESCALATE = auto()
+    RETURN = auto()
 
     # 系统操作
     SYSOP = auto()
@@ -176,52 +72,33 @@ class OpCode(Enum):
 class Instruction:
     """单条指令"""
     opcode: OpCode
-    rd: int = 0       # 目标寄存器
-    rn: int = 0       # 第一个操作数寄存器
-    rm: int = 0       # 第二个操作数寄存器
-    imm: int = 0      # 立即数
-    addr: int = 0     # 地址（用于LDR/STR/分支）
-    label: str = ""   # 标签
-    is_immediate: bool = False  # 是否为立即数形式
-    asm_text: str = ""  # 原始汇编文本（用于调试）
+    rd: int = 0
+    rn: int = 0
+    rm: int = 0
+    imm: int = 0
+    addr: int = 0
+    label: str = ""
+    is_immediate: bool = False
+    asm_text: str = ""
 
 
 @dataclass
 class CPUState:
-    """
-    CPU 状态
-
-    寄存器布局：
-    ┌─────────────────────────────────────┐
-    │ R0-R12: 通用寄存器                  │
-    │ R13 (SP): 栈指针                    │
-    │ R14 (LR): 链接寄存器                │
-    │ R15 (PC): 程序计数器                │
-    ├─────────────────────────────────────┤
-    │ N: 负数标志                         │
-    │ Z: 零标志                           │
-    │ C: 进位标志                         │
-    │ V: 溢出标志                         │
-    └─────────────────────────────────────┘
-    """
+    """CPU 状态"""
     registers: List[int] = field(default_factory=lambda: [0] * 16)
-    n: bool = False   # 负数
-    z: bool = False   # 零
-    c: bool = False   # 进位
-    v: bool = False   # 溢出
-    privilege_level: int = 0
+    n: bool = False
+    z: bool = False
+    c: bool = False
+    v: bool = False
 
     def get_reg(self, idx: int) -> int:
-        """获取寄存器值"""
         return self.registers[idx]
 
     def set_reg(self, idx: int, value: int) -> None:
-        """设置寄存器值"""
         self.registers[idx] = value & 0xFFFFFFFF
 
     @property
     def pc(self) -> int:
-        """程序计数器 (R15)"""
         return self.registers[15]
 
     @pc.setter
@@ -230,7 +107,6 @@ class CPUState:
 
     @property
     def sp(self) -> int:
-        """栈指针 (R13)"""
         return self.registers[13]
 
     @sp.setter
@@ -239,7 +115,6 @@ class CPUState:
 
     @property
     def lr(self) -> int:
-        """链接寄存器 (R14)"""
         return self.registers[14]
 
     @lr.setter
@@ -247,56 +122,20 @@ class CPUState:
         self.registers[14] = value & 0xFFFFFFFF
 
     def update_flags(self, result: int) -> None:
-        """根据结果更新条件标志"""
         result_32 = result & 0xFFFFFFFF
         self.n = (result_32 & 0x80000000) != 0
         self.z = result_32 == 0
 
     def reset(self) -> None:
-        """重置状态"""
         self.registers = [0] * 16
         self.n = False
         self.z = False
         self.c = False
         self.v = False
-        self.privilege_level = 0
 
 
 class Assembler:
-    """
-    汇编器 - 将汇编代码转换为指令。
-
-    支持的语法：
-        MOV Rd, #imm          ; 立即数传送
-        MOV Rd, Rn            ; 寄存器传送
-        ADD Rd, Rn, Rm        ; 加法
-        ADD Rd, Rn, #imm      ; 加立即数
-        SUB Rd, Rn, Rm        ; 减法
-        SUB Rd, Rn, #imm      ; 减立即数
-        CMP Rn, Rm            ; 比较寄存器
-        CMP Rn, #imm          ; 比较立即数
-        AND Rd, Rn, Rm        ; 与
-        ORR Rd, Rn, Rm        ; 或
-        LDR Rd, [Rn]          ; 加载
-        LDR Rd, [Rn, #offset] ; 带偏移加载
-        LDR Rd, =addr         ; 加载地址
-        STR Rd, [Rn]          ; 存储
-        STR Rd, [Rn, #offset] ; 带偏移存储
-        B label               ; 无条件分支
-        BEQ label             ; 相等时分支
-        BNE label             ; 不等时分支
-        BL label              ; 带链接分支
-        BX Rm                 ; 寄存器分支
-        DESCEND Rd            ; RPA: 进入子域（Rd = 控制块地址）
-        ESCALATE Rd           ; RPA: 请求父域服务（Rd = 服务类型）
-        RETURN                ; RPA: 返回子域
-        SYSOP op, subop, a1, a2 ; 系统操作
-        NOP                   ; 空操作
-        HALT                  ; 停机
-
-    标签定义：
-        label: MOV R0, #1      ; 标签后跟冒号
-    """
+    """汇编器"""
 
     REG_NAMES = {
         'R0': 0, 'R1': 1, 'R2': 2, 'R3': 3,
@@ -312,14 +151,12 @@ class Assembler:
         self.instructions: List[Tuple[int, Instruction]] = []
 
     def parse_register(self, s: str) -> int:
-        """解析寄存器名称"""
         s = s.strip().upper()
         if s in self.REG_NAMES:
             return self.REG_NAMES[s]
         raise ValueError(f"未知寄存器: {s}")
 
     def parse_immediate(self, s: str) -> int:
-        """解析立即数"""
         s = s.strip()
         if s.startswith('#'):
             s = s[1:]
@@ -332,23 +169,22 @@ class Assembler:
             return int(s)
 
     def parse_address(self, s: str) -> Tuple[str, int, int]:
-        """解析地址模式，返回 (mode, base_reg, offset)"""
         s = s.strip()
 
-        # [Rn] 模式
+        # [Rn]
         match = re.match(r'\[(\w+)\]', s)
         if match:
             reg = self.parse_register(match.group(1))
             return ('reg', reg, 0)
 
-        # [Rn, #offset] 模式
+        # [Rn, #offset]
         match = re.match(r'\[(\w+),\s*#([^\]]+)\]', s)
         if match:
             reg = self.parse_register(match.group(1))
             offset = self.parse_immediate(match.group(2))
             return ('reg_offset', reg, offset)
 
-        # =addr 模式（伪指令）
+        # =addr
         if s.startswith('='):
             addr = self.parse_immediate(s[1:])
             return ('absolute', 0, addr)
@@ -356,11 +192,9 @@ class Assembler:
         raise ValueError(f"无法解析地址: {s}")
 
     def assemble(self, code: str, base_addr: int = 0) -> List[Tuple[int, Instruction]]:
-        """汇编代码"""
         self.labels = {}
         self.instructions = []
 
-        # 预处理：移除注释，提取标签
         lines = []
         addr = base_addr
 
@@ -384,7 +218,6 @@ class Assembler:
             lines.append((addr, line))
             addr += 4
 
-        # 第二遍：解析指令
         for addr, line in lines:
             inst = self._parse_instruction(line, addr)
             if inst:
@@ -394,7 +227,6 @@ class Assembler:
         return self.instructions
 
     def _parse_instruction(self, line: str, addr: int) -> Optional[Instruction]:
-        """解析单条指令"""
         parts = line.split(None, 1)
         if not parts:
             return None
@@ -431,7 +263,6 @@ class Assembler:
         return self._parse_operands(opcode, operands, addr)
 
     def _parse_operands(self, opcode: OpCode, operands: str, addr: int) -> Instruction:
-        """解析操作数"""
         if opcode == OpCode.MOV:
             parts = [p.strip() for p in operands.split(',')]
             rd = self.parse_register(parts[0])
@@ -492,7 +323,6 @@ class Assembler:
             return Instruction(opcode=opcode, rd=rd)
 
         elif opcode == OpCode.SYSOP:
-            # SYSOP op, subop, arg1, arg2
             parts = [p.strip() for p in operands.split(',')]
             if len(parts) < 2:
                 raise ValueError(f"SYSOP 需要至少 2 个操作数: {operands}")
@@ -535,82 +365,54 @@ class SimpleCore:
     """
     简化指令集核心。
 
-    每个Domain可以有不同的ISA实现，这是简化版的类ARM指令集。
-    用于演示 RPA 的 descend/escalate 机制。
+    LDR/STR 通过 MemoryManager 进行地址翻译:
+    - memtable_chain 保存当前域的页表链
+    - 翻译失败触发 TranslationError (包含 fault_owner)
 
-    关键行为：
-    ===========
-
-    DESCEND R0 (R0 = 控制块地址):
-        1. 保存当前上下文到控制块
-        2. 读取子域控制块的 execution_address
-        3. 跳转到 execution_address 开始执行子域代码
-
-    ESCALATE R0 (R0 = 服务类型):
-        1. 保存当前上下文到控制块
-        2. 写入服务类型到 return_value
-        3. 写入异常类型 (0x00 = ESCALATE)
-        4. 切换到父域
-        5. 跳转到父域的 exception_vector
-
-    RETURN:
-        1. 从控制块恢复子域上下文
-        2. 继续执行子域代码
-
-    地址翻译:
-    =========
-        当前层 VA → 页表翻译 → 上一层 VA → ... → 真正 PA
-        翻译失败 → 触发缺页异常
+    DESCEND/ESCALATE/RETURN 指令:
+    - DESCEND: 读取 DomainBlock，跳转到 execution_address
+    - ESCALATE: 保存上下文，触发 escalate_handler
+    - RETURN: 恢复上下文，继续执行
     """
 
-    def __init__(self, memory=None, rpa_core=None, domain_block_addr: int = 0):
+    def __init__(self, memory=None, memory_manager=None):
         """
         初始化核心。
 
         Args:
             memory: Memory 实例（物理内存）
-            rpa_core: RPACore 实例（用于异常处理）
-            domain_block_addr: 当前域的控制块地址
+            memory_manager: MemoryManager 实例（带翻译的读写）
         """
         self.state = CPUState()
         self.memory = memory
-        self.rpa_core = rpa_core
+        self.memory_manager = memory_manager
 
-        # 当前域的控制块地址
-        self.domain_block_addr = domain_block_addr
+        # 当前 Domain 的 memtable 翻译链
+        # [domain_n.memtable, ..., domain_0.memtable]
+        self.memtable_chain: List[int] = []
 
-        # 页表（用于地址翻译）
-        self.page_table: Optional[Any] = None
+        # 当前 Domain 的控制块地址
+        self.domain_block_addr: int = 0
 
-        # 父域的核心（用于 ESCALATE 切换）
-        self.parent_core: Optional['SimpleCore'] = None
-
-        # 指令存储：地址 -> 指令
+        # 指令存储
         self.instructions: Dict[int, Instruction] = {}
-
-        # 标签：名称 -> 地址
         self.labels: Dict[str, int] = {}
-
-        # 汇编器
         self.assembler = Assembler()
 
-        # 回调式处理器（向后兼容，逐步废弃）
+        # 回调处理器（可选，用于高层模拟）
         self.descend_handler: Optional[Callable] = None
         self.escalate_handler: Optional[Callable] = None
         self.return_handler: Optional[Callable] = None
-
-        # 系统操作处理器
         self.sysop_handler: Optional[Callable] = None
+        self.fault_handler: Optional[Callable] = None
 
         # 执行控制
         self.running = False
         self.halted = False
-
-        # 执行历史
         self.execution_log: List[Dict] = []
 
     def load_assembly(self, code: str, base_addr: int = 0) -> int:
-        """加载汇编代码到内存，返回结束地址"""
+        """加载汇编代码，返回结束地址"""
         instructions = self.assembler.assemble(code, base_addr)
 
         for addr, inst in instructions:
@@ -628,25 +430,10 @@ class SimpleCore:
     def _encode_instruction(self, inst: Instruction) -> int:
         """编码指令为 32 位值"""
         opcode_val = inst.opcode.value
-        encoded = (opcode_val << 24) | (inst.rd << 16) | (inst.rn << 12) | (inst.rm << 8) | (inst.imm & 0xFF)
-        return encoded
-
-    def decode_instruction(self, word: int) -> Optional[Instruction]:
-        """从内存字解码指令"""
-        opcode_val = (word >> 24) & 0xFF
-        rd = (word >> 16) & 0xF
-        rn = (word >> 12) & 0xF
-        rm = (word >> 8) & 0xF
-        imm = word & 0xFF
-
-        try:
-            opcode = OpCode(opcode_val)
-            return Instruction(opcode=opcode, rd=rd, rn=rn, rm=rm, imm=imm)
-        except ValueError:
-            return None
+        return (opcode_val << 24) | (inst.rd << 16) | (inst.rn << 12) | (inst.rm << 8) | (inst.imm & 0xFF)
 
     def step(self) -> bool:
-        """执行单条指令，返回是否应该继续执行"""
+        """执行单条指令"""
         if self.halted:
             return False
 
@@ -657,22 +444,15 @@ class SimpleCore:
             self.halted = True
             return False
 
-        # 记录执行历史
         log_entry = {
             "pc": pc,
             "instruction": inst.asm_text or f"{inst.opcode.name}",
-            "opcode": inst.opcode.name,
-            "rd": inst.rd,
-            "rn": inst.rn,
-            "rm": inst.rm,
-            "imm": inst.imm,
             "registers_before": self.state.registers.copy(),
         }
 
         self._execute(inst)
 
         log_entry["registers_after"] = self.state.registers.copy()
-        log_entry["flags"] = {"N": self.state.n, "Z": self.state.z}
         self.execution_log.append(log_entry)
 
         if self.state.pc == pc and not self.halted:
@@ -681,7 +461,7 @@ class SimpleCore:
         return not self.halted
 
     def run(self, max_steps: int = 10000) -> int:
-        """运行直到停机或达到最大步数"""
+        """运行直到停机"""
         self.running = True
         steps = 0
         while self.running and steps < max_steps:
@@ -695,7 +475,7 @@ class SimpleCore:
         """执行单条指令"""
         opcode = inst.opcode
 
-        # ===== 数据处理指令 =====
+        # 数据处理
         if opcode == OpCode.MOV:
             if inst.is_immediate:
                 self.state.set_reg(inst.rd, inst.imm)
@@ -704,88 +484,41 @@ class SimpleCore:
 
         elif opcode == OpCode.ADD:
             val_n = self.state.get_reg(inst.rn)
-            if inst.is_immediate:
-                result = val_n + inst.imm
-            else:
-                result = val_n + self.state.get_reg(inst.rm)
-            self.state.set_reg(inst.rd, result)
-            self.state.update_flags(result)
+            val_m = inst.imm if inst.is_immediate else self.state.get_reg(inst.rm)
+            self.state.set_reg(inst.rd, val_n + val_m)
+            self.state.update_flags(val_n + val_m)
 
         elif opcode == OpCode.SUB:
             val_n = self.state.get_reg(inst.rn)
-            if inst.is_immediate:
-                result = val_n - inst.imm
-            else:
-                result = val_n - self.state.get_reg(inst.rm)
-            self.state.set_reg(inst.rd, result)
-            self.state.update_flags(result)
+            val_m = inst.imm if inst.is_immediate else self.state.get_reg(inst.rm)
+            self.state.set_reg(inst.rd, val_n - val_m)
+            self.state.update_flags(val_n - val_m)
 
         elif opcode == OpCode.CMP:
             val_n = self.state.get_reg(inst.rn)
-            if inst.is_immediate:
-                result = val_n - inst.imm
-            else:
-                result = val_n - self.state.get_reg(inst.rm)
-            self.state.update_flags(result)
+            val_m = inst.imm if inst.is_immediate else self.state.get_reg(inst.rm)
+            self.state.update_flags(val_n - val_m)
 
         elif opcode == OpCode.AND:
             val_n = self.state.get_reg(inst.rn)
-            if inst.is_immediate:
-                result = val_n & inst.imm
-            else:
-                result = val_n & self.state.get_reg(inst.rm)
-            self.state.set_reg(inst.rd, result)
-            self.state.update_flags(result)
+            val_m = inst.imm if inst.is_immediate else self.state.get_reg(inst.rm)
+            self.state.set_reg(inst.rd, val_n & val_m)
+            self.state.update_flags(val_n & val_m)
 
         elif opcode == OpCode.ORR:
             val_n = self.state.get_reg(inst.rn)
-            if inst.is_immediate:
-                result = val_n | inst.imm
-            else:
-                result = val_n | self.state.get_reg(inst.rm)
-            self.state.set_reg(inst.rd, result)
-            self.state.update_flags(result)
+            val_m = inst.imm if inst.is_immediate else self.state.get_reg(inst.rm)
+            self.state.set_reg(inst.rd, val_n | val_m)
+            self.state.update_flags(val_n | val_m)
 
-        # ===== 加载/存储指令 =====
+        # 加载/存储
         elif opcode == OpCode.LDR:
-            if inst.addr != 0:
-                addr = inst.addr
-            elif inst.imm != 0:
-                addr = self.state.get_reg(inst.rn) + inst.imm
-            else:
-                addr = self.state.get_reg(inst.rn)
-
-            # 地址翻译
-            try:
-                pa = self.translate_address(addr)
-            except MemoryError:
-                return
-
-            if self.memory:
-                value = self.memory.read_word(pa)
-            else:
-                value = 0
-            self.state.set_reg(inst.rd, value)
+            self._execute_ldr(inst)
 
         elif opcode == OpCode.STR:
-            if inst.addr != 0:
-                addr = inst.addr
-            elif inst.imm != 0:
-                addr = self.state.get_reg(inst.rn) + inst.imm
-            else:
-                addr = self.state.get_reg(inst.rn)
+            self._execute_str(inst)
 
-            # 地址翻译
-            try:
-                pa = self.translate_address(addr)
-            except MemoryError:
-                return
-
-            value = self.state.get_reg(inst.rd)
-            if self.memory:
-                self.memory.write_word(pa, value)
-
-        # ===== 分支指令 =====
+        # 分支
         elif opcode == OpCode.B:
             self.state.pc = inst.addr
 
@@ -802,10 +535,9 @@ class SimpleCore:
             self.state.pc = inst.addr
 
         elif opcode == OpCode.BX:
-            target = self.state.get_reg(inst.rm)
-            self.state.pc = target
+            self.state.pc = self.state.get_reg(inst.rm)
 
-        # ===== RPA 指令 =====
+        # RPA 指令
         elif opcode == OpCode.DESCEND:
             self._execute_descend(inst)
 
@@ -824,95 +556,79 @@ class SimpleCore:
         elif opcode == OpCode.NOP:
             pass
 
-    def _execute_descend(self, inst: Instruction) -> None:
-        """
-        执行 DESCEND 指令
-
-        流程：
-        ┌─────────────────────────────────────────────────┐
-        │ 1. 从 Rd 读取控制块地址                          │
-        │ 2. 保存当前上下文到当前域的控制块                 │
-        │ 3. 读取子域控制块的 execution_address            │
-        │ 4. 跳转到 execution_address                      │
-        └─────────────────────────────────────────────────┘
-        """
-        block_addr = self.state.get_reg(inst.rd)
-
-        # 保存当前上下文
-        if self.memory and self.domain_block_addr != 0:
-            self._save_context_to_block(self.domain_block_addr)
-
-        # 读取子域入口地址
-        if self.memory:
-            child_entry = self.memory.read_word(block_addr + 0x00)
+    def _execute_ldr(self, inst: Instruction) -> None:
+        """执行 LDR 指令，通过 MemoryManager 翻译地址"""
+        # 计算虚拟地址
+        if inst.addr != 0:
+            va = inst.addr
+        elif inst.imm != 0:
+            va = self.state.get_reg(inst.rn) + inst.imm
         else:
-            child_entry = 0
+            va = self.state.get_reg(inst.rn)
 
-        # 回调式处理器（向后兼容）
-        if self.descend_handler:
-            result = self.descend_handler(block_addr)
-            self.state.set_reg(0, result)
+        try:
+            # 使用 MemoryManager 进行带翻译的读取
+            if self.memory_manager and len(self.memtable_chain) > 0:
+                value, fault_owner = self.memory_manager.read_with_translation(
+                    va, self.memtable_chain, size=4
+                )
+                if fault_owner is not None:
+                    # 翻译失败，触发异常
+                    if self.fault_handler:
+                        self.fault_handler('translation', va, fault_owner)
+                    else:
+                        self.halted = True
+                    return
+            elif self.memory:
+                # 无翻译链，直接访问
+                value = self.memory.read_word(va)
+            else:
+                value = 0
+
+            self.state.set_reg(inst.rd, value)
+
+        except MemoryError as e:
+            # 内存访问错误
+            if self.fault_handler:
+                self.fault_handler('memory', va, str(e))
+            else:
+                self.halted = True
+
+    def _execute_str(self, inst: Instruction) -> None:
+        """执行 STR 指令，通过 MemoryManager 翻译地址"""
+        # 计算虚拟地址
+        if inst.addr != 0:
+            va = inst.addr
+        elif inst.imm != 0:
+            va = self.state.get_reg(inst.rn) + inst.imm
         else:
-            # 跳转到子域入口
-            self.state.pc = child_entry
-            self.domain_block_addr = block_addr
+            va = self.state.get_reg(inst.rn)
 
-    def _execute_escalate(self, inst: Instruction) -> None:
-        """
-        执行 ESCALATE 指令
+        value = self.state.get_reg(inst.rd)
 
-        流程：
-        ┌─────────────────────────────────────────────────┐
-        │ 1. 从 Rd 读取服务类型                            │
-        │ 2. 保存当前上下文到控制块                         │
-        │ 3. 写入服务类型到 return_value (0x7C)            │
-        │ 4. 写入异常类型 = 0x00 (ESCALATE)                │
-        │ 5. 写入异常地址 = 当前 PC                        │
-        │ 6. 切换到父域                                    │
-        │ 7. 跳转到父域的 exception_vector                 │
-        └─────────────────────────────────────────────────┘
-        """
-        service_type = self.state.get_reg(inst.rd)
+        try:
+            # 使用 MemoryManager 进行带翻译的写入
+            if self.memory_manager and len(self.memtable_chain) > 0:
+                fault_owner = self.memory_manager.write_with_translation(
+                    va, value, self.memtable_chain, size=4
+                )
+                if fault_owner is not None:
+                    # 翻译失败，触发异常
+                    if self.fault_handler:
+                        self.fault_handler('translation', va, fault_owner)
+                    else:
+                        self.halted = True
+                    return
+            elif self.memory:
+                # 无翻译链，直接访问
+                self.memory.write_word(va, value)
 
-        # 保存上下文
-        if self.memory and self.domain_block_addr != 0:
-            self._save_context_to_block(self.domain_block_addr)
-            self.memory.write_word(self.domain_block_addr + 0x7C, service_type)
-            self.memory.write_word(self.domain_block_addr + 0x80, 0x00)  # ESCALATE
-            self.memory.write_word(self.domain_block_addr + 0x84, self.state.pc)
-
-        # 回调式处理器（向后兼容）
-        if self.escalate_handler:
-            result = self.escalate_handler(service_type)
-            self.state.set_reg(0, result)
-        elif self.parent_core:
-            # 切换到父域
-            parent_block = self.parent_core.domain_block_addr
-            if self.memory and parent_block != 0:
-                exception_vector = self.memory.read_word(parent_block + 0x04)
-                self.parent_core.state.pc = exception_vector
-            self.halted = True
-        else:
-            self.halted = True
-
-    def _execute_return(self, inst: Instruction) -> None:
-        """
-        执行 RETURN 指令
-
-        流程：
-        ┌─────────────────────────────────────────────────┐
-        │ 1. 从控制块恢复上下文                             │
-        │ 2. 从 saved_pc 恢复执行                          │
-        └─────────────────────────────────────────────────┘
-        """
-        if self.memory and self.domain_block_addr != 0:
-            self._restore_context_from_block(self.domain_block_addr)
-
-        if self.return_handler:
-            result = self.state.get_reg(0)
-            self.return_handler(result)
-        else:
-            self.halted = False
+        except MemoryError as e:
+            # 内存访问错误
+            if self.fault_handler:
+                self.fault_handler('memory', va, str(e))
+            else:
+                self.halted = True
 
     def _execute_sysop(self, inst: Instruction) -> None:
         """执行 SYSOP 指令"""
@@ -925,25 +641,128 @@ class SimpleCore:
             result = self.sysop_handler(op, subop, arg1, arg2, inst.rd, inst.rn)
             if result is not None:
                 self.state.set_reg(inst.rd, result)
-        else:
-            if self.rpa_core:
-                self.rpa_core.fault("privilege_violation", self.state.pc)
 
-    def _save_context_to_block(self, block_addr: int) -> None:
+    def _execute_descend(self, inst: Instruction) -> None:
         """
-        保存上下文到控制块
+        执行 DESCEND 指令
 
-        控制块布局：
-        0x3C: saved_pc
-        0x40: saved_lr
-        0x44: saved_sp
-        0x48-0x78: saved_regs (R0-R12)
-        0x78: saved_flags
+        DESCEND Rd (Rd = 控制块地址)
+
+        流程:
+        1. 从 Rd 读取控制块地址
+        2. 保存当前上下文到当前控制块（返回地址 = PC + 4）
+        3. 从新控制块读取 execution_address
+        4. 更新 domain_block_addr
+        5. 跳转到 execution_address
         """
         if not self.memory:
             return
 
-        self.memory.write_word(block_addr + 0x3C, self.state.pc)
+        block_addr = self.state.get_reg(inst.rd)
+
+        # 保存当前上下文到当前控制块（返回地址 = PC + 4）
+        if self.domain_block_addr != 0:
+            self._save_context(self.domain_block_addr, return_pc=self.state.pc + 4)
+
+        # 读取新控制块
+        execution_addr = self.memory.read_word(block_addr + 0x00)
+        exception_vec = self.memory.read_word(block_addr + 0x04)
+        memtable_addr = self.memory.read_word(block_addr + 0x10)
+
+        # 更新状态
+        self.domain_block_addr = block_addr
+
+        # 更新 memtable_chain
+        # 如果 memtable_addr != 0，添加到链的前面
+        if memtable_addr != 0:
+            self.memtable_chain = [memtable_addr] + self.memtable_chain
+
+        # 回调（可选）
+        if self.descend_handler:
+            result = self.descend_handler(block_addr)
+            if result is not None:
+                self.state.set_reg(0, result)
+
+        # 跳转到执行地址
+        if execution_addr != 0:
+            self.state.pc = execution_addr
+        else:
+            self.halted = True
+
+    def _execute_escalate(self, inst: Instruction) -> None:
+        """
+        执行 ESCALATE 指令
+
+        ESCALATE Rd (Rd = 服务类型)
+
+        流程:
+        1. 从 Rd 读取服务类型
+        2. 保存当前上下文到控制块
+        3. 写入服务类型到 return_value (0x7C)
+        4. 写入异常类型 (0x80) = 0x00 (ESCALATE)
+        5. 写入异常地址 (0x84) = PC
+        6. 触发 escalate_handler 或 halt
+        """
+        if not self.memory:
+            return
+
+        service_type = self.state.get_reg(inst.rd)
+
+        # 保存上下文
+        if self.domain_block_addr != 0:
+            self._save_context(self.domain_block_addr)
+            self.memory.write_word(self.domain_block_addr + 0x7C, service_type)
+            self.memory.write_word(self.domain_block_addr + 0x80, 0x00)  # ESCALATE
+            self.memory.write_word(self.domain_block_addr + 0x84, self.state.pc)
+
+        # 回调
+        if self.escalate_handler:
+            result = self.escalate_handler(service_type)
+            if result is not None:
+                self.state.set_reg(0, result)
+        else:
+            self.halted = True
+
+    def _execute_return(self, inst: Instruction) -> None:
+        """
+        执行 RETURN 指令
+
+        流程:
+        1. 从控制块恢复上下文
+        2. 从 saved_pc 恢复执行
+
+        RETURN 通常用于:
+        - 父域处理完 ESCALATE 后返回子域
+        - 异常处理完成后恢复执行
+        """
+        if not self.memory:
+            return
+
+        if self.domain_block_addr != 0:
+            self._restore_context(self.domain_block_addr)
+
+            # 从 memtable_chain 移除当前域的页表
+            memtable_addr = self.memory.read_word(self.domain_block_addr + 0x10)
+            if memtable_addr != 0 and len(self.memtable_chain) > 0:
+                if self.memtable_chain[0] == memtable_addr:
+                    self.memtable_chain = self.memtable_chain[1:]
+
+        # 回调
+        if self.return_handler:
+            self.return_handler(self.state.get_reg(0))
+
+        # 恢复执行
+        self.halted = False
+
+    def _save_context(self, block_addr: int, return_pc: int = None) -> None:
+        """保存上下文到控制块"""
+        if not self.memory:
+            return
+
+        # 保存返回地址
+        if return_pc is None:
+            return_pc = self.state.pc + 4
+        self.memory.write_word(block_addr + 0x3C, return_pc)
         self.memory.write_word(block_addr + 0x40, self.state.lr)
         self.memory.write_word(block_addr + 0x44, self.state.sp)
 
@@ -961,7 +780,7 @@ class SimpleCore:
             flags |= 1 << 28
         self.memory.write_word(block_addr + 0x78, flags)
 
-    def _restore_context_from_block(self, block_addr: int) -> None:
+    def _restore_context(self, block_addr: int) -> None:
         """从控制块恢复上下文"""
         if not self.memory:
             return
@@ -979,72 +798,6 @@ class SimpleCore:
         self.state.c = bool(flags & (1 << 29))
         self.state.v = bool(flags & (1 << 28))
 
-    def translate_address(self, va: int) -> int:
-        """
-        翻译虚拟地址到物理地址
-
-        地址翻译流程：
-        ┌─────────────────────────────────────────────────┐
-        │ 当前层 VA                                       │
-        │     │                                           │
-        │     ▼                                           │
-        │ 当前层页表翻译                                   │
-        │     │                                           │
-        │     ▼                                           │
-        │ 父层 VA (如果有父层)                            │
-        │     │                                           │
-        │     ▼                                           │
-        │ 父层页表翻译                                     │
-        │     │                                           │
-        │     ▼                                           │
-        │ ... 递归翻译 ...                                │
-        │     │                                           │
-        │     ▼                                           │
-        │ 物理地址 PA                                     │
-        │                                                 │
-        │ 翻译失败 → MemoryError (缺页异常)               │
-        └─────────────────────────────────────────────────┘
-        """
-        # 无页表时 VA = PA
-        if self.page_table is None:
-            pa = va
-        else:
-            pa = self.page_table.translate(va)
-            if pa is None:
-                if self.rpa_core:
-                    self.rpa_core.fault("page_fault", va)
-                raise MemoryError(f"Page fault: VA=0x{va:#x}")
-
-        # 递归翻译到父层
-        if self.parent_core:
-            return self.parent_core.translate_address(pa)
-
-        return pa
-
-    def read_memory_va(self, va: int, size: int = 4) -> int:
-        """通过地址翻译读取内存"""
-        pa = self.translate_address(va)
-        if not self.memory:
-            return 0
-        if size == 1:
-            return self.memory.read_byte(pa)
-        elif size == 2:
-            return self.memory.read_halfword(pa)
-        else:
-            return self.memory.read_word(pa)
-
-    def write_memory_va(self, va: int, value: int, size: int = 4) -> None:
-        """通过地址翻译写入内存"""
-        pa = self.translate_address(va)
-        if not self.memory:
-            return
-        if size == 1:
-            self.memory.write_byte(pa, value)
-        elif size == 2:
-            self.memory.write_halfword(pa, value)
-        else:
-            self.memory.write_word(pa, value)
-
     def reset(self) -> None:
         """重置核心状态"""
         self.state.reset()
@@ -1053,39 +806,27 @@ class SimpleCore:
         self.execution_log.clear()
 
     def get_state_dump(self) -> Dict[str, Any]:
-        """获取当前状态转储"""
+        """获取当前状态"""
         return {
             "registers": {f"R{i}": hex(self.state.registers[i]) for i in range(16)},
             "flags": {"N": self.state.n, "Z": self.state.z, "C": self.state.c, "V": self.state.v},
             "pc": hex(self.state.pc),
-            "domain_block": hex(self.domain_block_addr) if self.domain_block_addr else "None",
             "halted": self.halted,
+            "memtable_chain": [hex(m) for m in self.memtable_chain],
         }
 
     def get_execution_log(self) -> List[Dict]:
-        """获取执行历史"""
         return self.execution_log.copy()
 
     def clear_execution_log(self) -> None:
-        """清空执行历史"""
         self.execution_log.clear()
 
 
 def Asm(code: str, base_addr: int = 0, decoder: Optional['SimpleCore'] = None) -> int:
-    """
-    汇编代码快捷函数
-
-    Args:
-        code: 汇编代码
-        base_addr: 基地址
-        decoder: SimpleCore 实例（可选）
-
-    Returns:
-        结束地址
-    """
+    """汇编代码快捷函数"""
     if decoder:
         return decoder.load_assembly(code, base_addr)
     else:
         assembler = Assembler()
-        instructions = assembler.assemble(code, base_addr)
-        return base_addr + len(instructions) * 4
+        assembler.assemble(code, base_addr)
+        return base_addr + len(assembler.instructions) * 4
