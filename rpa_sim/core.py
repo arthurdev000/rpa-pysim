@@ -440,9 +440,3 @@ class RPACore:
             "privilege_violation": 0x03,
         }
         return codes.get(fault_type, 0xFF)
-
-
-# 向后兼容别名
-Level = Domain
-LevelConfig = DomainBlock
-INHERIT = 0
