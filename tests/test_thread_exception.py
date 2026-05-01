@@ -2,7 +2,7 @@
 Thread and Exception Tests for RPA
 
 测试场景：
-1. 创建两个线程（共享页表的子域）
+1. 创建两个线程（共享内存的子域）
 2. Try-catch 机制（使用子域实现异常捕获）
 3. 内存访问异常（访问不存在的地址触发异常）
 """
@@ -12,8 +12,7 @@ import sys
 sys.path.insert(0, '..')
 
 from rpa_sim import (
-    RPACore, Domain, DomainBlock, Memory, SimpleCore, Machine,
-    INHERIT, INDEPENDENT
+    RPACore, Domain, DomainBlock, Memory, SimpleCore, Machine
 )
 
 
@@ -22,7 +21,7 @@ class TestThreadCreation:
     测试线程创建场景
 
     线程与进程的区别：
-    - 线程共享父进程的内存空间（INHERIT 页表）
+    - 线程共享父进程的内存空间（memtable_address = 0）
     - 线程有独立执行入口和栈
     - 线程可访问父进程的资源
     """
@@ -33,7 +32,7 @@ class TestThreadCreation:
 
         场景：
         1. 进程创建两个线程
-        2. 两个线程共享页表（INHERIT）
+        2. 两个线程共享内存（memtable_address = 0）
         3. 两个线程有独立入口和栈
         4. 两个线程可以访问共享数据
         """

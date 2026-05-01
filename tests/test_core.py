@@ -3,7 +3,7 @@ RPA Core Tests - Basic functionality tests for the refactored API
 """
 
 import pytest
-from rpa_sim import RPACore, Domain, DomainBlock, Memory, SimpleCore, INHERIT
+from rpa_sim import RPACore, Domain, DomainBlock, Memory, SimpleCore
 
 
 class TestDomainBlock:
