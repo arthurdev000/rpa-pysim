@@ -182,7 +182,7 @@ class Machine:
         # 如果有代码，加载到内存
         if code:
             domain_id = parent.domain_id * 16 + idx + 1
-            self.load_code(code, block.entry_addr, domain_id)
+            self.load_code(code, block.execution_address, domain_id)
 
         return idx
 
@@ -211,7 +211,7 @@ class Machine:
             setup_handler(core, result)
 
         # 设置入口地址
-        core.state.pc = result.get("entry", 0)
+        core.state.pc = result.get("execution_address", 0)
 
         # 更新当前核心
         self.current_core = core

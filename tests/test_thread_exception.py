@@ -308,7 +308,7 @@ class TestDesignQuestions:
 
         # 创建控制块
         block = DomainBlock(
-            entry_addr=0x2000,
+            execution_address=0x2000,
             exception_vector=0x3000,  # 父域处理入口
         )
         machine.load_domain_block(0x1000, block)
@@ -367,7 +367,7 @@ class TestDesignQuestions:
         machine.load_code(child_code, base_addr=0x2000)
 
         # 创建控制块
-        block = DomainBlock(entry_addr=0x2000)
+        block = DomainBlock(execution_address=0x2000)
         machine.load_domain_block(0x1000, block)
 
         parent_core = machine.root_core

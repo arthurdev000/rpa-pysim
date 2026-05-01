@@ -36,31 +36,24 @@ root_domain (最高特权，系统启动时创建)
 ```
 偏移    字段名                大小    说明
 ────    ──────                ────    ────
-0x00    entry_addr            4       入口地址
+0x00    execution_address     4       执行地址
 0x04    exception_vector      4       异常向量
 0x08    interrupt_vector      4       中断向量
 0x0C    interrupt_ctrl        4       中断控制器
 0x10    memtable_addr         4       内存区域表地址
-0x14    reserved              4       保留
-0x18    reserved_0[8]         36      保留
+0x14-0x7F  reserved           108     保留
 
-────── 子域可写区域 ──────
-0x3C    saved_pc              4       保存的 PC
-0x40    saved_lr              4       保存的 LR
-0x44    saved_sp              4       保存的 SP
-0x48    saved_r0              4       保存的 R0
-0x4C    saved_r1              4       保存的 R1
-...     saved_r2-r12          44      保存的 R2-R12
-0x78    saved_flags           4       保存的条件标志
-0x7C    return_value          4       返回值
+────── 状态区域 (Decoder 上报) ──────
+0x80    status                4       状态码
 ```
 
 ### 字段详解
 
-#### entry_addr (0x00)
-- 子域开始执行的地址
+#### execution_address (0x00)
+- 子域执行地址
 - DESCEND 后硬件跳转到此地址
-- 必须是有效的代码地址
+- 首次 DESCEND：入口地址
+- 后续 DESCEND：保存的返回地址
 
 #### exception_vector (0x04)
 - 异常处理入口地址
@@ -83,17 +76,13 @@ root_domain (最高特权，系统启动时创建)
 - 子域如需建立映射：保存旧表 → 创建新表 → 更新此字段（更新动作表示生效）
 - 值为 0：不建立新映射（try-catch 场合）
 
-#### reserved (0x14)
+#### reserved (0x14-0x7F)
 - 保留字段
 
-#### 保存区域 (0x3C - 0x78)
-- ESCALATE/异常发生时，硬件自动保存当前 Domain 的寄存器
-- 父域可以读写此区域
-- DESCEND 返回时自动恢复
-
-#### return_value (0x7C)
-- ESCALATE 时存放服务请求类型
-- 父域处理完成后存放返回值
+#### status (0x80)
+- 状态码，由 Decoder 上报给 RTL
+- RTL 通过 `decoder->dump_status(status)` 获取详细状态信息
+- 不同 ISA 可有不同的状态定义
 
 ---
 
@@ -190,11 +179,11 @@ DESCEND Rd    ; Rd = 控制块地址
 1. 从 Rd 读取控制块地址
 2. 验证控制块有效性：
    - 地址对齐到 64 字节
-   - entry_addr 有效
+   - execution_address 有效
 3. 硬件操作：
    - 保存当前 PC 到父域控制块的 saved_pc
    - 设置当前 Domain 为新 Domain
-   - 跳转到 entry_addr
+   - 跳转到 execution_address
 4. 清除流水线（上下文同步）
 
 ### ESCALATE

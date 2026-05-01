@@ -43,24 +43,14 @@ DomainBlock (控制块):
     ├────────────┬───────────────────────────────────────────────────┤
     │ 偏移       │ 字段                                              │
     ├────────────┼───────────────────────────────────────────────────┤
-    │ 0x00       │ entry_addr          子域入口地址                  │
+    │ 0x00       │ execution_address   执行地址                      │
     │ 0x04       │ exception_vector    异常向量                      │
     │ 0x08       │ interrupt_vector    中断向量                      │
     │ 0x0C       │ interrupt_ctrl      中断控制器                    │
     │ 0x10       │ memtable_addr       内存区域表地址                │
-    │ 0x14-0x3B  │ reserved            保留                          │
-    │ 0x1C-0x3B  │ reserved            保留                          │
+    │ 0x14-0x7F  │ reserved            保留                          │
     ├────────────┼───────────────────────────────────────────────────┤
-    │ 0x3C       │ saved_pc            保存的 PC                     │
-    │ 0x40       │ saved_lr            保存的 LR                     │
-    │ 0x44       │ saved_sp            保存的 SP                     │
-    │ 0x48-0x78  │ saved_regs[13]      保存的 R0-R12                 │
-    │ 0x78       │ saved_flags         保存的条件标志                │
-    │ 0x7C       │ return_value        返回值                        │
-    ├────────────┼───────────────────────────────────────────────────┤
-    │ 0x80       │ exception_type      异常类型                      │
-    │ 0x84       │ exception_addr      异常地址                      │
-    │ 0x88       │ exception_info      异常详情                      │
+    │ 0x80       │ status              状态码 (Decoder上报)          │
     └────────────┴───────────────────────────────────────────────────┘
 
 DESCEND 流程:
@@ -69,25 +59,21 @@ DESCEND 流程:
     父域执行 DESCEND R0 (R0 = 控制块地址):
 
     ┌─────────────────────────────────────────────────────────────────┐
-    │ 父域 (Domain N)              │ 子域 (Domain N+1)               │
+    │ RTL (硬件)                   │ Decoder (SimpleCore)            │
     ├──────────────────────────────┼──────────────────────────────────┤
     │                              │                                 │
-    │ 1. 保存上下文:               │                                 │
-    │    saved_pc = PC             │                                 │
-    │    saved_lr = LR             │                                 │
-    │    saved_sp = SP             │                                 │
-    │    saved_regs = R0-R12       │                                 │
-    │                              │                                 │
-    │ 2. 读取子域控制块:           │                                 │
+    │ 1. 读取控制块:               │                                 │
     │    entry = [R0 + 0x00]       │                                 │
     │    exception = [R0 + 0x04]   │                                 │
+    │    memtable = [R0 + 0x10]    │                                 │
     │                              │                                 │
-    │ 3. 切换到子域:               │                                 │
-    │    PC = entry ────────────────▶ 开始执行                       │
+    │ 2. 切换到子域:               │                                 │
+    │    current_domain = child    │                                 │
+    │    PC = entry ────────────────▶ Decoder 开始执行               │
     │                              │                                 │
-    │                              │ 4. 子域执行代码                 │
+    │                              │ 3. Decoder 执行代码             │
     │                              │    ...                          │
-    │                              │    ESCALATE R0 或 RETURN        │
+    │                              │    ESCALATE R0                  │
     │                              │                                 │
     └──────────────────────────────┴──────────────────────────────────┘
 
@@ -97,27 +83,27 @@ ESCALATE 流程:
     子域执行 ESCALATE R0 (R0 = 服务类型):
 
     ┌─────────────────────────────────────────────────────────────────┐
-    │ 子域 (Domain N+1)            │ 父域 (Domain N)                 │
+    │ RTL (硬件)                   │ Decoder (SimpleCore)            │
     ├──────────────────────────────┼──────────────────────────────────┤
     │                              │                                 │
-    │ 1. 保存上下文到控制块        │                                 │
-    │ 2. 写入服务类型:             │                                 │
-    │    [block+0x7C] = R0        │                                 │
-    │ 3. 写入异常信息:             │                                 │
-    │    [block+0x80] = 0x00      │ (ESCALATE 类型)                 │
-    │    [block+0x84] = PC        │                                 │
+    │                              │ 1. Decoder 保存自己的上下文     │
+    │                              │    (寄存器状态由 Decoder 管理)  │
     │                              │                                 │
-    │ 4. 切换到父域                │                                 │
-    │    ──────────────────────────▶ 5. 跳转到 exception_vector      │
+    │                              │ 2. Decoder 写入状态信息:        │
+    │                              │    [block+0x80] = status        │
+    │                              │    [block+0x84] = addr          │
     │                              │                                 │
-    │                              │ 6. 处理服务请求                 │
-    │                              │    读取 [child_block+0x7C]     │
+    │ 3. RTL 读取状态:             │                                 │
+    │    status = [block+0x80]     │                                 │
     │                              │                                 │
-    │                              │ 7. RETURN 返回 ────────────────┐│
-    │                              │                                ││
-    │ 8. 恢复上下文 ◀───────────────────────────────────────────────┘│
-    │    从控制块恢复 PC, LR, SP   │                                 │
-    │    继续执行                  │                                 │
+    │ 4. 切换到父域:               │                                 │
+    │    current_domain = parent   │                                 │
+    │    PC = parent.exception_vec ─▶ Decoder 跳转到处理程序         │
+    │                              │                                 │
+    │                              │ 5. Decoder 处理请求             │
+    │                              │    读取状态、执行服务           │
+    │                              │                                 │
+    │                              │ 6. RETURN 返回                  │
     │                              │                                 │
     └──────────────────────────────┴──────────────────────────────────┘
 
@@ -127,29 +113,24 @@ ESCALATE 流程:
     子域触发异常:
 
     ┌─────────────────────────────────────────────────────────────────┐
-    │ 子域                          │ 父域                          │
-    ├───────────────────────────────┼───────────────────────────────┤
-    │                               │                               │
-    │ 1. 触发异常                   │                               │
-    │    (缺页、非法指令等)         │                               │
-    │                               │                               │
-    │ 2. 检查 exception_vector      │                               │
-    │    if (exception_vector == 0) │                               │
-    │       → 传播到父域            │                               │
-    │    else                       │                               │
-    │       → 跳转到 exception_vect │                               │
-    │                               │                               │
-    │ 3. 保存异常信息:              │                               │
-    │    [block+0x80] = 异常类型    │                               │
-    │    [block+0x84] = 异常地址    │                               │
-    │                               │                               │
-    │ 4. ESCALATE 到父域 ───────────▶ 5. exception_vector 处理      │
-    │                               │                               │
-    │                               │ 6. 处理异常                   │
-    │                               │    读取异常信息               │
-    │                               │    执行恢复或终止             │
-    │                               │                               │
-    └───────────────────────────────┴───────────────────────────────┘
+    │ RTL (硬件)                   │ Decoder (SimpleCore)            │
+    ├──────────────────────────────┼──────────────────────────────────┤
+    │                              │                                 │
+    │                              │ 1. Decoder 检测到异常           │
+    │                              │    (缺页、非法指令等)           │
+    │                              │                                 │
+    │                              │ 2. Decoder 保存上下文           │
+    │                              │    写入状态信息到控制块         │
+    │                              │    [block+0x80] = status        │
+    │                              │                                 │
+    │ 3. RTL 检查 exception_vector │                                 │
+    │    if (== 0) → 传播到父域    │                                 │
+    │    else → 跳转处理           │                                 │
+    │                              │                                 │
+    │ 4. RTL 切换到父域            │                                 │
+    │    ───────────────────────────▶ 5. Decoder 异常处理            │
+    │                              │                                 │
+    └──────────────────────────────┴──────────────────────────────────┘
 """
 
 from dataclasses import dataclass, field
@@ -198,26 +179,15 @@ class DomainBlock:
     见文件头部 ASCII 图解
     """
     # 配置字段 (父域在 DESCEND 前写入)
-    entry_addr: int = 0            # 0x00: 入口地址
+    execution_address: int = 0      # 0x00: 执行地址
     exception_vector: int = 0      # 0x04: 异常向量
     interrupt_vector: int = 0      # 0x08: 中断向量
     interrupt_ctrl: int = 0        # 0x0C: 中断控制器
     memtable_addr: int = 0         # 0x10: 内存区域表地址
+    # 0x14-0x7F: 保留
 
-    # 保存的上下文 (硬件在 ESCALATE/异常时保存)
-    saved_pc: int = 0              # 0x3C
-    saved_lr: int = 0              # 0x40
-    saved_sp: int = 0              # 0x44
-    saved_regs: List[int] = field(default_factory=lambda: [0] * 13)
-    saved_flags: int = 0           # 0x78: 保存的 CPU 条件标志 (N/Z/C/V)
-
-    # 返回值
-    return_value: int = 0          # 0x7C
-
-    # 异常信息 (硬件在异常时写入)
-    exception_type: int = 0        # 0x80
-    exception_addr: int = 0        # 0x84
-    exception_info: int = 0        # 0x88
+    # 状态字段 (Decoder 上报给 RTL)
+    status: int = 0                # 0x80: 状态码
 
     # 向后兼容字段
     params: Dict[str, Any] = field(default_factory=dict)
@@ -277,7 +247,7 @@ class RPACore:
     def __init__(self):
         # 根域 (domain_id = 0)
         root_block = DomainBlock(
-            entry_addr=0x8000,
+            execution_address=0x8000,
             exception_vector=0x8004,
         )
         self.root_domain: Domain = Domain(domain_id=0, block=root_block)
@@ -323,21 +293,18 @@ class RPACore:
         """
         进入子域
 
-        流程:
+        RTL层只负责:
         1. 从内存读取 DomainBlock
-        2. 验证权限
-        3. 创建新域
-        4. 保存当前上下文
-        5. 切换到子域
-        6. 返回入口信息
+        2. 创建新域
+        3. 切换到子域
+        4. 返回入口信息
+
+        寄存器保存由 Decoder 负责
         """
         if self.memory is None:
             raise RuntimeError("Memory not set")
 
         block = self._read_domain_block(block_addr)
-
-        if not self.current_domain.block.can_descend:
-            raise ValueError("Current domain cannot create child domains")
 
         # 创建新域
         new_id = self.current_domain.domain_id * 16 + len(self.current_domain.children) + 1
@@ -347,9 +314,6 @@ class RPACore:
             parent=self.current_domain,
         )
 
-        # 保存上下文
-        self._save_context(self.current_domain.block)
-
         # 切换
         self.current_domain = new_domain
         self.domain_stack.append(new_domain)
@@ -357,7 +321,7 @@ class RPACore:
         self.stats["descend_count"] += 1
 
         return {
-            "entry": block.entry_addr,
+            "execution_address": block.execution_address,
             "memtable": block.memtable_addr,
             "domain_id": new_id,
         }
@@ -366,25 +330,16 @@ class RPACore:
         """
         请求父域服务
 
-        流程:
-        1. 保存上下文到控制块
-        2. 写入服务类型
-        3. 切换到父域
-        4. 返回父域 exception_vector
+        RTL层只负责:
+        1. 切换到父域
+        2. 返回 exception_vector
+
+        状态保存由 Decoder 负责
         """
         if self.current_domain.parent is None:
             raise RuntimeError("Cannot escalate from root domain")
 
         parent = self.current_domain.parent
-
-        # 保存上下文
-        block = self.current_domain.block
-        block.return_value = service_type
-        self._save_context(block)
-
-        # 写入异常信息
-        block.exception_type = 0x00  # ESCALATE
-        block.exception_addr = self._get_pc()
 
         self.stats["escalate_count"] += 1
 
@@ -394,16 +349,12 @@ class RPACore:
         return {
             "vector": parent.block.exception_vector,
             "domain_id": parent.domain_id,
-            "exception_type": 0x00,
-            "service_type": service_type,
         }
 
     def return_to_child(self, child: Domain) -> Any:
-        """返回子域"""
-        self._restore_context(child.block)
+        """返回子域 (由 Decoder 调用)"""
         self.current_domain = child
         return {
-            "entry": child.block.saved_pc,
             "domain_id": child.domain_id,
         }
 
@@ -435,63 +386,25 @@ class RPACore:
         """从内存读取 DomainBlock"""
         if self.memory:
             return DomainBlock(
-                entry_addr=self.memory.read_word(addr + 0x00),
+                execution_address=self.memory.read_word(addr + 0x00),
                 exception_vector=self.memory.read_word(addr + 0x04),
                 interrupt_vector=self.memory.read_word(addr + 0x08),
                 interrupt_ctrl=self.memory.read_word(addr + 0x0C),
                 memtable_addr=self.memory.read_word(addr + 0x10),
+                status=self.memory.read_word(addr + 0x80),
             )
         return DomainBlock()
 
     def _write_domain_block(self, addr: int, block: DomainBlock) -> None:
         """写入 DomainBlock 到内存"""
         if self.memory:
-            self.memory.write_word(addr + 0x00, block.entry_addr)
+            self.memory.write_word(addr + 0x00, block.execution_address)
             self.memory.write_word(addr + 0x04, block.exception_vector)
             self.memory.write_word(addr + 0x08, block.interrupt_vector)
             self.memory.write_word(addr + 0x0C, block.interrupt_ctrl)
             self.memory.write_word(addr + 0x10, block.memtable_addr)
-
-            self.memory.write_word(addr + 0x3C, block.saved_pc)
-            self.memory.write_word(addr + 0x40, block.saved_lr)
-            self.memory.write_word(addr + 0x44, block.saved_sp)
-            for i, reg in enumerate(block.saved_regs):
-                self.memory.write_word(addr + 0x48 + i * 4, reg)
-            self.memory.write_word(addr + 0x78, block.saved_flags)
-            self.memory.write_word(addr + 0x7C, block.return_value)
-
-    def _save_context(self, block: DomainBlock) -> None:
-        """保存执行上下文到控制块"""
-        if self.core:
-            block.saved_pc = self.core.state.pc
-            block.saved_lr = self.core.state.lr
-            block.saved_sp = self.core.state.sp
-            for i in range(13):
-                block.saved_regs[i] = self.core.state.get_reg(i)
-            flags = 0
-            if self.core.state.n:
-                flags |= 1 << 31
-            if self.core.state.z:
-                flags |= 1 << 30
-            if self.core.state.c:
-                flags |= 1 << 29
-            if self.core.state.v:
-                flags |= 1 << 28
-            block.saved_flags = flags
-
-    def _restore_context(self, block: DomainBlock) -> None:
-        """从控制块恢复执行上下文"""
-        if self.core:
-            self.core.state.pc = block.saved_pc
-            self.core.state.lr = block.saved_lr
-            self.core.state.sp = block.saved_sp
-            for i in range(13):
-                self.core.state.set_reg(i, block.saved_regs[i])
-            flags = block.saved_flags
-            self.core.state.n = bool(flags & (1 << 31))
-            self.core.state.z = bool(flags & (1 << 30))
-            self.core.state.c = bool(flags & (1 << 29))
-            self.core.state.v = bool(flags & (1 << 28))
+            # 状态字段
+            self.memory.write_word(addr + 0x80, block.status)
 
     def _get_pc(self) -> int:
         """获取当前 PC"""
@@ -501,8 +414,8 @@ class RPACore:
 
     def _handle_fault(self, fault_info: FaultInfo) -> None:
         """处理异常"""
-        self.current_domain.block.exception_type = self._fault_type_to_code(fault_info.fault_type)
-        self.current_domain.block.exception_addr = fault_info.address
+        self.current_domain.block.status = self._fault_type_to_code(fault_info.fault_type)
+        self.current_domain.block.status_addr = fault_info.address
 
         handler = self.exception_handlers.get(fault_info.fault_type)
         if handler:
