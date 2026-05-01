@@ -10,13 +10,41 @@ Memory Manager - Physical memory and page table simulation
 
 页表叠加：
 - 每层的页表翻译上一层返回的"物理地址"
-- 实现RPA的地址空间隔离机制
+- 翻译失败时，异常归属 memtable_address 所属的域
+- 实现 RPA 的地址空间隔离机制
+
+翻译链示例：
+    Domain 2 访问 VA2:
+      ipa2 = translate(domain2.memtable_addr, va2)
+           - 访问页表数据需要用 domain1.memtable_addr 翻译
+           - 失败 → 报给 domain2
+      ipa1 = translate(domain1.memtable_addr, ipa2)
+           - 失败 → 报给 domain1
+      pa = translate(domain0.memtable_addr, ipa1)
+           - 失败 → 报给 domain0 (root)
+      访问 pa → 总线错误
 """
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from enum import Enum, auto
 import struct
+
+
+class TranslationError(Exception):
+    """地址翻译错误，包含归属信息"""
+    def __init__(self, va: int, memtable_owner: int, reason: str):
+        self.va = va
+        self.memtable_owner = memtable_owner  # memtable 所属的域 ID
+        self.reason = reason
+        super().__init__(f"Translation error: VA=0x{va:#x}, owner={memtable_owner}, {reason}")
+
+
+class BusError(Exception):
+    """总线错误 - 物理地址访问失败"""
+    def __init__(self, pa: int):
+        self.pa = pa
+        super().__init__(f"Bus error: PA=0x{pa:#x}")
 
 
 @dataclass
@@ -33,16 +61,18 @@ class PageTableEntry:
 class PageTable:
     """单级页表"""
 
-    def __init__(self, base_addr: int, page_size: int = 4096):
+    def __init__(self, base_addr: int, page_size: int = 4096, owner_domain: int = 0):
         """
         初始化页表。
 
         Args:
             base_addr: 页表基址（用于标识）
             page_size: 页大小，默认4KB
+            owner_domain: 页表所属的域 ID
         """
         self.base_addr = base_addr
         self.page_size = page_size
+        self.owner_domain = owner_domain
         self.entries: Dict[int, PageTableEntry] = {}
 
     def map(self, va: int, pa: int,
@@ -326,12 +356,16 @@ class MemoryManager:
     """
     内存管理器，支持页表叠加。
 
-    实现RPA的页表叠加机制：
-    - Level N+1 的 VA 由 PT_{N+1} 翻译为 Level N 的 PA
-    - Level N 的 PA 由 PT_N 翻译为 Level N-1 的 PA
-    - 依此类推直到真正的物理地址
+    翻译规则：
+    - memtable_address = 0：跳过本层，继承父域地址空间
+    - memtable_address != 0：用该页表翻译，失败报给本域
 
-    无页表时，PA = VA。
+    翻译链示例：
+        Domain 2 访问 VA:
+        1. 用 domain2.memtable_addr 的页表翻译 → 失败报给 domain2
+        2. 用 domain1.memtable_addr 的页表翻译 → 失败报给 domain1
+        3. 用 domain0.memtable_addr 的页表翻译 → 失败报给 domain0
+        4. 访问最终物理地址 → 失败报总线错误
     """
 
     def __init__(self, physical_memory: Optional['Memory'] = None):
@@ -342,118 +376,143 @@ class MemoryManager:
             physical_memory: 物理内存实例，默认创建1MB内存
         """
         self.physical_memory = physical_memory or Memory(1024 * 1024)
-        self.page_tables: Dict[int, PageTable] = {}  # base_addr -> PageTable
-        self.level_page_tables: Dict[int, int] = {}  # level_id -> page_table_base
+        # memtable_addr -> PageTable
+        self.page_tables: Dict[int, PageTable] = {}
 
-    def create_page_table(self, base_addr: int, page_size: int = 4096) -> PageTable:
+    def create_page_table(self, base_addr: int, page_size: int = 4096,
+                          owner_domain: int = 0) -> PageTable:
         """
         创建页表。
 
         Args:
-            base_addr: 页表基址
+            base_addr: 页表基址（memtable_address）
             page_size: 页大小
+            owner_domain: 页表所属的域 ID
 
         Returns:
             创建的页表
         """
-        pt = PageTable(base_addr, page_size)
+        pt = PageTable(base_addr, page_size, owner_domain)
         self.page_tables[base_addr] = pt
         return pt
 
-    def set_level_page_table(self, level_id: int, pt_base: int) -> None:
+    def get_page_table(self, memtable_addr: int) -> Optional[PageTable]:
+        """获取页表"""
+        return self.page_tables.get(memtable_addr)
+
+    def translate_chain(self, va: int, memtable_chain: List[int]) -> Tuple[int, Optional[int]]:
         """
-        设置某层的页表。
+        沿着 memtable 链翻译地址。
 
         Args:
-            level_id: 层级ID
-            pt_base: 页表基址
-        """
-        self.level_page_tables[level_id] = pt_base
-
-    def translate_stacked(self, va: int, level_stack: List[int]) -> int:
-        """
-        通过页表叠加翻译虚拟地址。
-
-        Args:
-            va: 最深层的虚拟地址
-            level_stack: 从根到当前层的层级ID列表
+            va: 虚拟地址
+            memtable_chain: 从当前域到根域的 memtable_address 列表
+                           [domain_n.memtable_addr, domain_n-1.memtable_addr, ..., domain_0.memtable_addr]
 
         Returns:
-            最终物理地址
+            (pa, fault_owner) - 物理地址和异常归属域
+            如果翻译成功，fault_owner 为 None
+            如果翻译失败，fault_owner 为失败的 memtable 所属域 ID
 
         Raises:
-            RuntimeError: 页表未找到或地址未映射
+            BusError: 物理地址访问失败
         """
         current_addr = va
 
-        # 从最深层向根层遍历
-        for level_id in reversed(level_stack):
-            pt_base = self.level_page_tables.get(level_id)
-
-            if pt_base is None:
-                # 无页表：直接使用当前地址
+        for memtable_addr in memtable_chain:
+            # memtable_addr = 0 表示跳过本层翻译
+            if memtable_addr == 0:
                 continue
 
-            pt = self.page_tables.get(pt_base)
+            pt = self.page_tables.get(memtable_addr)
             if pt is None:
-                raise RuntimeError(
-                    f"页表未找到: base=0x{pt_base:#x}"
-                )
+                # 页表不存在，报给该 memtable 的拥有者
+                # 但这里我们不知道 owner_domain，需要调用者处理
+                return (current_addr, memtable_addr)
 
-            # 通过此层翻译
+            # 翻译
             translated = pt.translate(current_addr)
             if translated is None:
-                raise RuntimeError(
-                    f"缺页异常: VA=0x{current_addr:#x}, level={level_id}"
-                )
+                # 翻译失败，报给该页表的拥有者
+                return (current_addr, pt.owner_domain)
 
             current_addr = translated
 
-        return current_addr
+        return (current_addr, None)
 
-    def read_word(self, va: int, level_stack: List[int]) -> int:
+    def read_with_translation(self, va: int, memtable_chain: List[int],
+                              size: int = 4) -> Tuple[int, Optional[int]]:
         """
-        读取一个字（32位），自动进行地址翻译。
+        带翻译的读取。
 
         Args:
             va: 虚拟地址
-            level_stack: 层级栈
+            memtable_chain: memtable 地址链
+            size: 读取大小（1/2/4 字节）
 
         Returns:
-            读取的值
+            (value, fault_owner) - 读取的值和异常归属
         """
-        pa = self.translate_stacked(va, level_stack)
-        return self.physical_memory.read_word(pa)
+        pa, fault_owner = self.translate_chain(va, memtable_chain)
+        if fault_owner is not None:
+            return (0, fault_owner)
 
-    def write_word(self, va: int, level_stack: List[int], value: int) -> None:
+        try:
+            if size == 1:
+                return (self.physical_memory.read_byte(pa), None)
+            elif size == 2:
+                return (self.physical_memory.read_halfword(pa), None)
+            else:
+                return (self.physical_memory.read_word(pa), None)
+        except MemoryError:
+            raise BusError(pa)
+
+    def write_with_translation(self, va: int, value: int,
+                               memtable_chain: List[int], size: int = 4) -> Optional[int]:
         """
-        写入一个字（32位），自动进行地址翻译。
+        带翻译的写入。
 
         Args:
             va: 虚拟地址
-            level_stack: 层级栈
             value: 要写入的值
-        """
-        pa = self.translate_stacked(va, level_stack)
-        self.physical_memory.write_word(pa, value)
+            memtable_chain: memtable 地址链
+            size: 写入大小（1/2/4 字节）
 
-    def dump_mappings(self, level_id: int) -> Dict:
+        Returns:
+            fault_owner 如果翻译失败，否则 None
         """
-        转储某层的页表映射。
+        pa, fault_owner = self.translate_chain(va, memtable_chain)
+        if fault_owner is not None:
+            return fault_owner
+
+        try:
+            if size == 1:
+                self.physical_memory.write_byte(pa, value)
+            elif size == 2:
+                self.physical_memory.write_halfword(pa, value)
+            else:
+                self.physical_memory.write_word(pa, value)
+            return None
+        except MemoryError:
+            raise BusError(pa)
+
+    def dump_mappings(self, memtable_addr: int) -> Dict:
+        """
+        转储页表映射。
 
         Returns:
             映射信息字典
         """
-        pt_base = self.level_page_tables.get(level_id)
-        if pt_base is None or pt_base == -1:
+        if memtable_addr == 0:
             return {"mode": "inherit"}
 
-        pt = self.page_tables.get(pt_base)
+        pt = self.page_tables.get(memtable_addr)
         if pt is None:
             return {}
 
         return {
-            "page_size": pt.page_size,
+            "page_size":     pt.page_size,
+            "owner_domain":  pt.owner_domain,
             "mappings": {
                 f"0x{vpn * pt.page_size:#x}": f"0x{entry.physical_page * pt.page_size:#x}"
                 for vpn, entry in pt.entries.items()
