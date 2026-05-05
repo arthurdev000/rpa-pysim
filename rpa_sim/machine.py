@@ -1,7 +1,7 @@
 """
-RPA Machine - 集成 RPACore、内存和核心
+RPA Machine - 集成 RPALogic、内存和核心
 
-Machine 类将 RPACore、Memory、MemoryManager 和 SimpleISA 组合在一起，
+Machine 类将 RPALogic、Memory、MemoryManager 和 SimpleISA 组合在一起，
 提供完整的 RPA 执行环境。
 
 架构说明：
@@ -11,7 +11,7 @@ Machine 类将 RPACore、Memory、MemoryManager 和 SimpleISA 组合在一起，
 """
 
 from typing import Any, Dict, Optional, Callable, List
-from .core import RPACore, Domain, DomainBlock
+from .rpa_logic import RPALogic, Domain, DomainBlock
 from .memory import Memory, MemoryManager, PageTable, TranslationError, BusError
 from .isa_simple import SimpleISA
 from .stdio import StdioDevice, StdioDeviceManager
@@ -25,7 +25,7 @@ class Machine:
     RPA 机器实例
 
     组件:
-    - RPACore: Domain 管理
+    - RPALogic: Domain 管理
     - Memory: 物理内存
     - MemoryManager: 页表管理和地址翻译
     - SimpleISA: 指令执行
@@ -35,11 +35,11 @@ class Machine:
                  stdio_base: int = STDIO_BASE,
                  stdio_callback: Optional[Callable[[str], None]] = None):
         # 核心组件
-        self.rpa = RPACore()
+        self.rpa = RPALogic()
         self.memory = Memory(size=memory_size)
         self.mm = MemoryManager(physical_memory=self.memory)
 
-        # 连接 RPACore 和 Memory
+        # 连接 RPALogic 和 Memory
         self.rpa.memory = self.memory
 
         # 单一核心
@@ -170,7 +170,7 @@ class Machine:
 
     def reset(self) -> None:
         """重置机器状态"""
-        self.rpa = RPACore()
+        self.rpa = RPALogic()
         self.memory = Memory(size=self.memory.size)
         self.mm = MemoryManager(physical_memory=self.memory)
         self.core = SimpleISA(rpa=self.rpa, memory=self.memory, memory_manager=self.mm)

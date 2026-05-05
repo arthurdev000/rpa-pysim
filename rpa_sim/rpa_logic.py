@@ -230,9 +230,9 @@ class FaultInfo:
     context: Dict[str, Any] = field(default_factory=dict)
 
 
-class RPACore:
+class RPALogic:
     """
-    RPA 核心 - 域管理
+    RPA 逻辑控制器 - 域管理
 
     每核心每特权层只有一个 DomainBlock。
     硬件只维护 current_domain，通过 parent 链向上查找。
