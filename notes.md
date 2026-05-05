@@ -92,26 +92,31 @@
 
 ## 待办事项
 
-### 参数传递检查
+### 参数传递检查 ✅ 已完成
 
 检查 DomainBlock 参数传递是否正确：
 
-1. **DESCEND 参数传递**
-   - ctrlblock_size 验证逻辑
-   - 对齐检查
-   - 各字段读取顺序
+1. **DESCEND 参数传递** ✅
+   - ctrlblock_size 验证逻辑正确
+   - 对齐检查正确（32字节）
+   - 各字段读取顺序正确
 
-2. **ESCALATE 返回值**
-   - 确认 ESCALATE 后父域如何获取子域状态
-   - service_type 传递机制
+2. **ESCALATE 返回值** ⚠️ 需要设计
+   - service_type 通过 R0 寄存器传递给父域
+   - 父域 exception_vector 处理程序需要从寄存器读取
+   - 当前没有机制让父域获取子域其他状态（如错误码）
+   - 建议：子域可将状态写入控制块扩展区域，父域通过控制块地址读取
 
 3. **跨域数据传递**
-   - 寄存器传递 vs 内存传递
-   - 控制块中哪些字段是输入/输出
+   - 寄存器传递：R0-R12, LR, SP 由 ISA 软件保存/恢复
+   - 控制块传递：execution_address, exception_vector, memtable_address 等
+   - 输入字段：ctrlblock_size, execution_address, exception_vector, interrupt_vector, interrupt_ctrl, memtable_address
+   - 输出字段：domain_id (系统分配), parent_block (可选)
 
-4. **domain_id 分配**
-   - 自动分配逻辑
-   - 唯一性保证
+4. **domain_id 分配** ✅
+   - 自动递增分配（_next_domain_id）
+   - 唯一性保证（每个新域分配新ID）
+   - 写入控制块 0x18 偏移
 
 ## 控制块设计
 
