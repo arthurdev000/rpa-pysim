@@ -1,8 +1,8 @@
 """
-SimpleCore - 简化指令集核心
+SimpleISA - 简化指令集核心
 
 这是 RPA 架构的指令执行核心。每个 Domain 可以有不同的 ISA 实现，
-SimpleCore 是一个简化版的类 ARM 指令集，用于演示 RPA 的核心机制。
+SimpleISA 是一个简化版的类 ARM 指令集，用于演示 RPA 的核心机制。
 
 支持的指令:
 ============
@@ -361,7 +361,7 @@ class Assembler:
         return Instruction(opcode=opcode)
 
 
-class SimpleCore:
+class SimpleISA:
     """
     简化指令集核心。
 
@@ -818,7 +818,7 @@ class SimpleCore:
         self.execution_log.clear()
 
 
-def Asm(code: str, base_addr: int = 0, decoder: Optional['SimpleCore'] = None) -> int:
+def Asm(code: str, base_addr: int = 0, decoder: Optional['SimpleISA'] = None) -> int:
     """汇编代码快捷函数"""
     if decoder:
         return decoder.load_assembly(code, base_addr)

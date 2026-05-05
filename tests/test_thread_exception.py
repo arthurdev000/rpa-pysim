@@ -7,7 +7,7 @@ Thread and Exception Tests for RPA
 
 import pytest
 from rpa_sim import (
-    Memory, SimpleCore, MemoryManager, DomainBlock
+    Memory, SimpleISA, MemoryManager, DomainBlock
 )
 
 
@@ -45,7 +45,7 @@ class TestDescendEscalate:
             HALT
         """
 
-        core = SimpleCore(memory=mem)
+        core = SimpleISA(memory=mem)
         core.load_assembly(main_code, base_addr=0x0000)
         core.load_assembly(child_code, base_addr=execution_addr)
 
@@ -73,7 +73,7 @@ class TestDescendEscalate:
         mem.write_word(block_addr + 0x04, 0)
         mem.write_word(block_addr + 0x10, 0x10000)   # memtable_address
 
-        core = SimpleCore(memory=mem)
+        core = SimpleISA(memory=mem)
         core.memtable_chain = []
 
         core.load_assembly("""
@@ -107,7 +107,7 @@ class TestDescendEscalate:
         mem.write_word(block_addr + 0x04, exception_vec)
         mem.write_word(block_addr + 0x10, 0)
 
-        core = SimpleCore(memory=mem)
+        core = SimpleISA(memory=mem)
         core.load_assembly("""
             MOV R0, #0x1000
             DESCEND R0
@@ -147,7 +147,7 @@ class TestDescendEscalate:
         mem.write_word(block_addr + 0x04, 0)        # exception_vector
         mem.write_word(block_addr + 0x10, 0)        # memtable_address = 0 (共享)
 
-        core = SimpleCore(memory=mem)
+        core = SimpleISA(memory=mem)
 
         # 主程序
         core.load_assembly("""
@@ -197,7 +197,7 @@ class TestMemoryTranslation:
         # 写入数据到物理地址
         mem.write_word(0x2000, 0xDEADBEEF)
 
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""
@@ -222,7 +222,7 @@ class TestMemoryTranslation:
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
         pt.map(0x1000, 0x2000)
 
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""
@@ -263,7 +263,7 @@ class TestMemoryTranslation:
         mem.write_word(block_addr + 0x04, 0)
         mem.write_word(block_addr + 0x10, 0x20000)   # memtable_address
 
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]  # Domain 0 的页表
 
         # 主程序
@@ -307,7 +307,7 @@ class TestFaultHandling:
         # 创建页表但不映射
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=2)
 
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""
@@ -338,7 +338,7 @@ class TestFaultHandling:
         """
         mem = Memory(size=1024)  # 1KB 内存
 
-        core = SimpleCore(memory=mem)
+        core = SimpleISA(memory=mem)
 
         core.load_assembly("""
             MOV R0, #0x10000   ; 超出范围
@@ -387,7 +387,7 @@ class TestMultiLevelTranslation:
         # 写入最终物理地址
         mem.write_word(0x3000, 0xFEEDFACE)
 
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
         # memtable_chain: [Domain 1 页表, Domain 0 页表]
         core.memtable_chain = [0x20000, 0x10000]
 
@@ -422,7 +422,7 @@ class TestMultiLevelTranslation:
         pt1 = mm.create_page_table(base_addr=0x20000, owner_domain=1)
         pt1.map(0x1000, 0x2000)  # VA -> IPA, 但 IPA 没有 -> PA
 
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
         core.memtable_chain = [0x20000, 0x10000]
 
         core.load_assembly("""
@@ -457,7 +457,7 @@ class TestSharedMemoryThread:
         """
         两个"线程"顺序执行，共享内存
 
-        这是用两个 SimpleCore 模拟共享 memtable_chain = [] 的场景
+        这是用两个 SimpleISA 模拟共享 memtable_chain = [] 的场景
         """
         mem = Memory(size=64 * 1024)
 
@@ -465,7 +465,7 @@ class TestSharedMemoryThread:
         mem.write_word(shared_addr, 100)
 
         # 线程1代码
-        thread1 = SimpleCore(memory=mem)
+        thread1 = SimpleISA(memory=mem)
         thread1.load_assembly("""
             MOV R1, #0x5000
             LDR R0, [R1]
@@ -482,7 +482,7 @@ class TestSharedMemoryThread:
         assert mem.read_word(shared_addr) == 300
 
         # 线程2代码
-        thread2 = SimpleCore(memory=mem)
+        thread2 = SimpleISA(memory=mem)
         thread2.load_assembly("""
             MOV R1, #0x5000
             LDR R0, [R1]
@@ -518,7 +518,7 @@ class TestPermissionChecking:
         # 写入数据到物理地址
         mem.write_word(0x2000, 0xDEADBEEF)
 
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""
@@ -554,7 +554,7 @@ class TestPermissionChecking:
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
         pt.map(0x1000, 0x2000, control=True)  # control=True
 
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""
@@ -591,7 +591,7 @@ class TestPermissionChecking:
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
         pt.map(0x1000, 0x2000, r=True, w=False)  # 只读
 
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""
@@ -631,7 +631,7 @@ class TestPermissionChecking:
         # 写入数据到物理地址
         mem.write_word(0x2000, 0xDEADBEEF)
 
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""
@@ -667,7 +667,7 @@ class TestPermissionChecking:
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
         pt.map(0x1000, 0x2000)  # 默认 r=True, w=True, control=False
 
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""

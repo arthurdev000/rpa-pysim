@@ -1,9 +1,9 @@
 """
-Tests for Memory and SimpleCore
+Tests for Memory and SimpleISA
 """
 
 import pytest
-from rpa_sim import Memory, MemoryManager, SimpleCore, Asm
+from rpa_sim import Memory, MemoryManager, SimpleISA, Asm
 
 
 class TestMemory:
@@ -46,11 +46,11 @@ class TestMemory:
         assert mem.access_log[1]["type"] == "read"
 
 
-class TestSimpleCore:
-    """Tests for SimpleCore"""
+class TestSimpleISA:
+    """Tests for SimpleISA"""
 
     def test_assemble_basic(self):
-        core = SimpleCore()
+        core = SimpleISA()
         end_addr = core.load_assembly("MOV R0, #42", base_addr=0x1000)
 
         assert end_addr == 0x1004
@@ -61,7 +61,7 @@ class TestSimpleCore:
         assert inst.imm == 42
 
     def test_assemble_with_labels(self):
-        core = SimpleCore()
+        core = SimpleISA()
         code = """
         start:
             MOV R0, #1
@@ -75,7 +75,7 @@ class TestSimpleCore:
 
     def test_execute_mov(self):
         mem = Memory(size=64 * 1024)
-        core = SimpleCore(memory=mem)
+        core = SimpleISA(memory=mem)
 
         core.load_assembly("MOV R0, #123", base_addr=0x1000)
         core.state.pc = 0x1000
@@ -85,7 +85,7 @@ class TestSimpleCore:
 
     def test_execute_add(self):
         mem = Memory(size=64 * 1024)
-        core = SimpleCore(memory=mem)
+        core = SimpleISA(memory=mem)
 
         code = """
             MOV R1, #10
@@ -101,7 +101,7 @@ class TestSimpleCore:
 
     def test_execute_loop(self):
         mem = Memory(size=64 * 1024)
-        core = SimpleCore(memory=mem)
+        core = SimpleISA(memory=mem)
 
         code = """
             MOV R0, #0
@@ -121,7 +121,7 @@ class TestSimpleCore:
 
     def test_execution_log(self):
         mem = Memory(size=64 * 1024)
-        core = SimpleCore(memory=mem)
+        core = SimpleISA(memory=mem)
 
         code = """
             MOV R0, #1
@@ -146,7 +146,7 @@ class TestMemoryTranslation:
         """Test LDR/STR with page table translation"""
         mem = Memory(size=64 * 1024)
         mm = MemoryManager(physical_memory=mem)
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
 
         # 创建页表：VA 0x1000 -> PA 0x2000
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
@@ -173,7 +173,7 @@ class TestMemoryTranslation:
         """Test STR with page table translation"""
         mem = Memory(size=64 * 1024)
         mm = MemoryManager(physical_memory=mem)
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
 
         # 创建页表
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
@@ -201,7 +201,7 @@ class TestDomainExecution:
 
     def test_descend_escalate_simulation(self):
         mem = Memory(size=1024 * 1024)
-        core = SimpleCore(memory=mem)
+        core = SimpleISA(memory=mem)
 
         code = """
             MOV R0, #42
@@ -230,7 +230,7 @@ class TestDomainExecution:
         mem = Memory(size=1024 * 1024)
 
         # Domain A
-        core_a = SimpleCore(memory=mem)
+        core_a = SimpleISA(memory=mem)
         core_a.load_assembly("""
             MOV R0, #100
             MOV R1, #200
@@ -241,7 +241,7 @@ class TestDomainExecution:
         core_a.state.set_reg(3, 0x0100)
 
         # Domain B
-        core_b = SimpleCore(memory=mem)
+        core_b = SimpleISA(memory=mem)
         core_b.load_assembly("""
             MOV R4, #1000
             MOV R5, #2000
