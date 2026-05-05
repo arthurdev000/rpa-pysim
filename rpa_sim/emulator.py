@@ -593,6 +593,14 @@ class SimpleCore:
                 self.fault_handler('memory', va, str(e))
             else:
                 self.halted = True
+        except Exception as e:
+            # 权限错误或其他异常
+            if self.fault_handler:
+                # PermissionError 有 owner_domain 属性
+                owner = getattr(e, 'owner_domain', 0)
+                self.fault_handler('permission', va, owner)
+            else:
+                self.halted = True
 
     def _execute_str(self, inst: Instruction) -> None:
         """执行 STR 指令，通过 MemoryManager 翻译地址"""
@@ -627,6 +635,14 @@ class SimpleCore:
             # 内存访问错误
             if self.fault_handler:
                 self.fault_handler('memory', va, str(e))
+            else:
+                self.halted = True
+        except Exception as e:
+            # 权限错误或其他异常
+            if self.fault_handler:
+                # PermissionError 有 owner_domain 属性
+                owner = getattr(e, 'owner_domain', 0)
+                self.fault_handler('permission', va, owner)
             else:
                 self.halted = True
 

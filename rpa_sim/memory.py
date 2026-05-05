@@ -31,6 +31,17 @@ from enum import Enum, auto
 import struct
 
 
+@dataclass
+class TranslationResult:
+    """翻译结果"""
+    pa: int                    # 物理地址
+    r: bool = True             # 可读
+    w: bool = True             # 可写
+    x: bool = True             # 可执行
+    c: bool = False            # 控制区域（必须用 sysop 访问）
+    fault_owner: Optional[int] = None  # 异常归属域，None 表示成功
+
+
 class TranslationError(Exception):
     """地址翻译错误，包含归属信息"""
     def __init__(self, va: int, memtable_owner: int, reason: str):
@@ -45,6 +56,16 @@ class BusError(Exception):
     def __init__(self, pa: int):
         self.pa = pa
         super().__init__(f"Bus error: PA=0x{pa:#x}")
+
+
+class PermissionError(Exception):
+    """权限错误 - 访问权限不足"""
+    def __init__(self, va: int, owner_domain: int, access_type: str, reason: str):
+        self.va = va
+        self.owner_domain = owner_domain
+        self.access_type = access_type  # 'read', 'write', 'execute'
+        self.reason = reason
+        super().__init__(f"Permission error: VA=0x{va:#x}, owner={owner_domain}, {access_type}: {reason}")
 
 
 @dataclass
@@ -400,7 +421,7 @@ class MemoryManager:
         """获取页表"""
         return self.page_tables.get(memtable_addr)
 
-    def translate_chain(self, va: int, memtable_chain: List[int]) -> Tuple[int, Optional[int]]:
+    def translate_chain(self, va: int, memtable_chain: List[int]) -> TranslationResult:
         """
         沿着 memtable 链翻译地址。
 
@@ -410,14 +431,11 @@ class MemoryManager:
                            [domain_n.memtable_addr, domain_n-1.memtable_addr, ..., domain_0.memtable_addr]
 
         Returns:
-            (pa, fault_owner) - 物理地址和异常归属域
-            如果翻译成功，fault_owner 为 None
-            如果翻译失败，fault_owner 为失败的 memtable 所属域 ID
-
-        Raises:
-            BusError: 物理地址访问失败
+            TranslationResult 包含物理地址、权限和异常信息
         """
         current_addr = va
+        # 权限从最宽松开始，每层翻译可能会限制
+        r, w, x, c = True, True, True, False
 
         for memtable_addr in memtable_chain:
             # memtable_addr = 0 表示跳过本层翻译
@@ -426,24 +444,45 @@ class MemoryManager:
 
             pt = self.page_tables.get(memtable_addr)
             if pt is None:
-                # 页表不存在，报给该 memtable 的拥有者
-                # 但这里我们不知道 owner_domain，需要调用者处理
-                return (current_addr, memtable_addr)
+                # 页表不存在，返回异常
+                return TranslationResult(
+                    pa=current_addr,
+                    fault_owner=memtable_addr  # 用 memtable_addr 作为临时标识
+                )
 
             # 翻译
             translated = pt.translate(current_addr)
             if translated is None:
                 # 翻译失败，报给该页表的拥有者
-                return (current_addr, pt.owner_domain)
+                return TranslationResult(
+                    pa=current_addr,
+                    fault_owner=pt.owner_domain
+                )
+
+            # 获取本层权限并合并（取交集，越内层越严格）
+            perms = pt.get_permissions(current_addr)
+            if perms:
+                layer_r, layer_w, layer_x, layer_c = perms
+                r = r and layer_r
+                w = w and layer_w
+                x = x and layer_x
+                c = c or layer_c  # 控制属性是累加的
 
             current_addr = translated
 
-        return (current_addr, None)
+        return TranslationResult(
+            pa=current_addr,
+            r=r,
+            w=w,
+            x=x,
+            c=c,
+            fault_owner=None
+        )
 
     def read_with_translation(self, va: int, memtable_chain: List[int],
                               size: int = 4) -> Tuple[int, Optional[int]]:
         """
-        带翻译的读取。
+        带翻译和权限检查的读取。
 
         Args:
             va: 虚拟地址
@@ -452,25 +491,38 @@ class MemoryManager:
 
         Returns:
             (value, fault_owner) - 读取的值和异常归属
+
+        Raises:
+            PermissionError: 权限不足（不可读或访问控制区域）
+            BusError: 物理地址访问失败
         """
-        pa, fault_owner = self.translate_chain(va, memtable_chain)
-        if fault_owner is not None:
-            return (0, fault_owner)
+        result = self.translate_chain(va, memtable_chain)
+        if result.fault_owner is not None:
+            return (0, result.fault_owner)
+
+        # 检查读权限
+        if not result.r:
+            raise PermissionError(va, result.fault_owner or 0, 'read', 'page not readable')
+
+        # 检查控制区域（必须用 sysop 访问）
+        if result.c:
+            raise PermissionError(va, result.fault_owner or 0, 'read',
+                                  'control area requires sysop access')
 
         try:
             if size == 1:
-                return (self.physical_memory.read_byte(pa), None)
+                return (self.physical_memory.read_byte(result.pa), None)
             elif size == 2:
-                return (self.physical_memory.read_halfword(pa), None)
+                return (self.physical_memory.read_halfword(result.pa), None)
             else:
-                return (self.physical_memory.read_word(pa), None)
+                return (self.physical_memory.read_word(result.pa), None)
         except MemoryError:
-            raise BusError(pa)
+            raise BusError(result.pa)
 
     def write_with_translation(self, va: int, value: int,
                                memtable_chain: List[int], size: int = 4) -> Optional[int]:
         """
-        带翻译的写入。
+        带翻译和权限检查的写入。
 
         Args:
             va: 虚拟地址
@@ -480,21 +532,34 @@ class MemoryManager:
 
         Returns:
             fault_owner 如果翻译失败，否则 None
+
+        Raises:
+            PermissionError: 权限不足（不可写或访问控制区域）
+            BusError: 物理地址访问失败
         """
-        pa, fault_owner = self.translate_chain(va, memtable_chain)
-        if fault_owner is not None:
-            return fault_owner
+        result = self.translate_chain(va, memtable_chain)
+        if result.fault_owner is not None:
+            return result.fault_owner
+
+        # 检查写权限
+        if not result.w:
+            raise PermissionError(va, result.fault_owner or 0, 'write', 'page not writable')
+
+        # 检查控制区域（必须用 sysop 访问）
+        if result.c:
+            raise PermissionError(va, result.fault_owner or 0, 'write',
+                                  'control area requires sysop access')
 
         try:
             if size == 1:
-                self.physical_memory.write_byte(pa, value)
+                self.physical_memory.write_byte(result.pa, value)
             elif size == 2:
-                self.physical_memory.write_halfword(pa, value)
+                self.physical_memory.write_halfword(result.pa, value)
             else:
-                self.physical_memory.write_word(pa, value)
+                self.physical_memory.write_word(result.pa, value)
             return None
         except MemoryError:
-            raise BusError(pa)
+            raise BusError(result.pa)
 
     def dump_mappings(self, memtable_addr: int) -> Dict:
         """
