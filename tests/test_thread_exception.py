@@ -497,3 +497,191 @@ class TestSharedMemoryThread:
         thread2.run()
 
         assert mem.read_word(shared_addr) == 600
+
+
+class TestPermissionChecking:
+    """
+    测试权限检查
+    """
+
+    def test_control_area_requires_sysop_for_read(self):
+        """
+        控制区域必须用 sysop 访问，LDR 应触发异常
+        """
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+
+        # 创建页表，标记为控制区域
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
+        pt.map(0x1000, 0x2000, control=True)  # control=True
+
+        # 写入数据到物理地址
+        mem.write_word(0x2000, 0xDEADBEEF)
+
+        core = SimpleCore(memory=mem, memory_manager=mm)
+        core.memtable_chain = [0x10000]
+
+        core.load_assembly("""
+            MOV R1, #0x1000
+            LDR R0, [R1]
+            HALT
+        """, base_addr=0x3000)
+
+        fault_info = {}
+
+        def on_fault(fault_type, va, owner):
+            fault_info['type'] = fault_type
+            fault_info['va'] = va
+            fault_info['owner'] = owner
+            core.halted = True
+
+        core.fault_handler = on_fault
+        core.state.pc = 0x3000
+        core.run()
+
+        # 应触发权限异常
+        assert fault_info['type'] == 'permission'
+        assert fault_info['va'] == 0x1000
+
+    def test_control_area_requires_sysop_for_write(self):
+        """
+        控制区域必须用 sysop 访问，STR 应触发异常
+        """
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+
+        # 创建页表，标记为控制区域
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
+        pt.map(0x1000, 0x2000, control=True)  # control=True
+
+        core = SimpleCore(memory=mem, memory_manager=mm)
+        core.memtable_chain = [0x10000]
+
+        core.load_assembly("""
+            MOV R0, #0xCAFEBABE
+            MOV R1, #0x1000
+            STR R0, [R1]
+            HALT
+        """, base_addr=0x3000)
+
+        fault_info = {}
+
+        def on_fault(fault_type, va, owner):
+            fault_info['type'] = fault_type
+            fault_info['va'] = va
+            fault_info['owner'] = owner
+            core.halted = True
+
+        core.fault_handler = on_fault
+        core.state.pc = 0x3000
+        core.run()
+
+        # 应触发权限异常
+        assert fault_info['type'] == 'permission'
+        assert fault_info['va'] == 0x1000
+
+    def test_read_only_page_blocks_write(self):
+        """
+        只读页面应阻止写入
+        """
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+
+        # 创建只读页表
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
+        pt.map(0x1000, 0x2000, r=True, w=False)  # 只读
+
+        core = SimpleCore(memory=mem, memory_manager=mm)
+        core.memtable_chain = [0x10000]
+
+        core.load_assembly("""
+            MOV R0, #0xCAFEBABE
+            MOV R1, #0x1000
+            STR R0, [R1]
+            HALT
+        """, base_addr=0x3000)
+
+        fault_info = {}
+
+        def on_fault(fault_type, va, owner):
+            fault_info['type'] = fault_type
+            fault_info['va'] = va
+            fault_info['owner'] = owner
+            core.halted = True
+
+        core.fault_handler = on_fault
+        core.state.pc = 0x3000
+        core.run()
+
+        # 应触发权限异常
+        assert fault_info['type'] == 'permission'
+        assert fault_info['va'] == 0x1000
+
+    def test_write_only_page_blocks_read(self):
+        """
+        只写页面应阻止读取
+        """
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+
+        # 创建只写页表
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
+        pt.map(0x1000, 0x2000, r=False, w=True)  # 只写
+
+        # 写入数据到物理地址
+        mem.write_word(0x2000, 0xDEADBEEF)
+
+        core = SimpleCore(memory=mem, memory_manager=mm)
+        core.memtable_chain = [0x10000]
+
+        core.load_assembly("""
+            MOV R1, #0x1000
+            LDR R0, [R1]
+            HALT
+        """, base_addr=0x3000)
+
+        fault_info = {}
+
+        def on_fault(fault_type, va, owner):
+            fault_info['type'] = fault_type
+            fault_info['va'] = va
+            fault_info['owner'] = owner
+            core.halted = True
+
+        core.fault_handler = on_fault
+        core.state.pc = 0x3000
+        core.run()
+
+        # 应触发权限异常
+        assert fault_info['type'] == 'permission'
+        assert fault_info['va'] == 0x1000
+
+    def test_normal_page_allows_rw(self):
+        """
+        正常页面（非控制区域）应允许 LDR/STR
+        """
+        mem = Memory(size=64 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+
+        # 创建正常页表
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
+        pt.map(0x1000, 0x2000)  # 默认 r=True, w=True, control=False
+
+        core = SimpleCore(memory=mem, memory_manager=mm)
+        core.memtable_chain = [0x10000]
+
+        core.load_assembly("""
+            MOV R0, #0xCAFEBABE
+            MOV R1, #0x1000
+            STR R0, [R1]
+            MOV R2, #0
+            LDR R3, [R1]
+            HALT
+        """, base_addr=0x3000)
+
+        core.state.pc = 0x3000
+        core.run()
+
+        # 应正常读写
+        assert mem.read_word(0x2000) == 0xCAFEBABE
+        assert core.state.get_reg(3) == 0xCAFEBABE

@@ -7,7 +7,7 @@ Main components:
 - Memory: Physical memory simulation
 - MemoryManager: Page table chain translation
 - PageTable, PageTableEntry: Page table structures
-- TranslationError, BusError: Address translation exceptions
+- TranslationError, BusError, PermissionError: Address translation exceptions
 - SimpleCore: Simplified instruction set core (ARM-like)
 - Machine: Complete machine integrating all components
 """
@@ -15,7 +15,7 @@ Main components:
 from .core import RPACore, Domain, DomainBlock, MemtableEntry, FaultInfo
 from .memory import (
     MemoryManager, PageTable, PageTableEntry, Memory,
-    TranslationError, BusError
+    TranslationError, BusError, PermissionError, TranslationResult
 )
 from .emulator import SimpleCore, Assembler, CPUState, Instruction, OpCode, Asm
 from .machine import Machine, STDIO_BASE
@@ -27,7 +27,7 @@ __all__ = [
     "RPACore", "Domain", "DomainBlock", "MemtableEntry", "FaultInfo",
     # Memory
     "MemoryManager", "PageTable", "PageTableEntry", "Memory",
-    "TranslationError", "BusError",
+    "TranslationError", "BusError", "PermissionError", "TranslationResult",
     # Emulator
     "SimpleCore", "Assembler", "CPUState", "Instruction", "OpCode", "Asm",
     # Machine
