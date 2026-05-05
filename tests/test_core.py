@@ -27,19 +27,17 @@ class TestDomain:
         block = DomainBlock(execution_address=0x8000)
         domain = Domain(domain_id=0, block=block)
         assert domain.domain_id == 0
-        assert len(domain.children) == 0
+        assert domain.parent is None
 
-    def test_add_child(self):
-        block = DomainBlock(execution_address=0x8000)
-        parent = Domain(domain_id=0, block=block)
+    def test_domain_with_parent(self):
+        parent_block = DomainBlock(execution_address=0x8000)
+        parent = Domain(domain_id=0, block=parent_block)
 
         child_block = DomainBlock(execution_address=0x1000)
-        child = Domain(domain_id=1, block=child_block)
+        child = Domain(domain_id=1, block=child_block, parent=parent)
 
-        idx = parent.add_child(child)
-        assert idx == 0
-        assert len(parent.children) == 1
         assert child.parent == parent
+        assert child.domain_id == 1
 
 
 class TestRPACore:
@@ -50,23 +48,8 @@ class TestRPACore:
         assert rpa.current_domain is rpa.root_domain
         assert rpa.get_depth() == 0
 
-    def test_configure_child(self):
-        rpa = RPACore()
-
-        child_block = DomainBlock(
-            execution_address=0x1000,
-            exception_vector=0x2000,
-            memtable_address=0x10000,
-        )
-        idx = rpa.configure_child(rpa.root_domain, child_block)
-        assert idx == 0
-        assert len(rpa.root_domain.children) == 1
-
     def test_descend_needs_memory(self):
         rpa = RPACore()
-
-        child_block = DomainBlock(execution_address=0x1000)
-        rpa.configure_child(rpa.root_domain, child_block)
 
         with pytest.raises(RuntimeError, match="Memory not set"):
             rpa.descend(0x1000)

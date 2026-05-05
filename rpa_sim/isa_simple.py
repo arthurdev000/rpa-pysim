@@ -375,15 +375,17 @@ class SimpleISA:
     - RETURN: 恢复上下文，继续执行
     """
 
-    def __init__(self, memory=None, memory_manager=None):
+    def __init__(self, rpa=None, memory=None, memory_manager=None):
         """
         初始化核心。
 
         Args:
+            rpa: RPACore 实例（管理域状态）
             memory: Memory 实例（物理内存）
             memory_manager: MemoryManager 实例（带翻译的读写）
         """
         self.state = CPUState()
+        self.rpa = rpa
         self.memory = memory
         self.memory_manager = memory_manager
 
@@ -663,69 +665,96 @@ class SimpleISA:
         执行 DESCEND 指令
 
         RTL 操作：
-        1. 读取控制块
-        2. 切换到子域
-        3. PC = execution_address
-
-        上下文保存由软件负责（如需要）
+        1. 读取 DomainBlock 地址
+        2. 调用 ISA.prepare_descend() 保存上下文
+        3. 更新当前域状态
+        4. 跳转到 execution_address
         """
-        if not self.memory:
-            return
-
         block_addr = self.state.get_reg(inst.rd)
 
-        # 读取控制块
-        execution_addr = self.memory.read_word(block_addr + 0x00)
-        memtable_addr = self.memory.read_word(block_addr + 0x10)
+        # RTL 调用 ISA 接口
+        self.prepare_descend(block_addr)
 
-        # 更新当前域
-        self.domain_block_addr = block_addr
-
-        # 更新 memtable_chain
-        if memtable_addr != 0:
-            self.memtable_chain = [memtable_addr] + self.memtable_chain
-
-        # 跳转到执行地址
-        if execution_addr != 0:
-            self.state.pc = execution_addr
+        if self.rpa:
+            # 模式1: 通过 RPACore 切换域
+            result = self.rpa.descend(block_addr)
+            execution_addr = result.get("execution_address", 0)
+            memtable = result.get("memtable", 0)
+            if execution_addr:
+                self.state.pc = execution_addr
+            else:
+                self.halted = True
+            # 更新 memtable_chain
+            if memtable != 0:
+                self.memtable_chain = [memtable] + self.memtable_chain
+            # 更新 domain_block_addr
+            self.domain_block_addr = block_addr
         else:
-            self.halted = True
+            # 模式2: 使用回调（向后兼容）
+            if self.memory:
+                execution_addr = self.memory.read_word(block_addr + 0x00)
+                memtable_addr = self.memory.read_word(block_addr + 0x10)
+                # 更新 memtable_chain
+                if memtable_addr != 0:
+                    self.memtable_chain = [memtable_addr] + self.memtable_chain
+                # 更新 domain_block_addr
+                self.domain_block_addr = block_addr
+                # 跳转到执行地址
+                if execution_addr != 0:
+                    self.state.pc = execution_addr
+                else:
+                    self.halted = True
 
-        # 回调（可选，用于高层模拟）
-        if self.descend_handler:
-            result = self.descend_handler(block_addr)
-            if result is not None:
-                self.state.set_reg(0, result)
+            # 回调
+            if self.descend_handler:
+                result = self.descend_handler(block_addr)
+                if result is not None:
+                    self.state.set_reg(0, result)
 
     def _execute_escalate(self, inst: Instruction) -> None:
         """
         执行 ESCALATE 指令
 
         RTL 操作：
-        1. 跳转到当前域的 exception_vector
-
-        上下文保存由软件负责（如需要）
+        1. 读取 service_type
+        2. 调用 ISA.complete_escalate() 保存上下文
+        3. 切换到父域，跳转到 exception_vector
         """
         service_type = self.state.get_reg(inst.rd)
+        block_addr = self.domain_block_addr
 
-        # 读取当前域的 exception_vector 并跳转
-        if self.memory and self.domain_block_addr != 0:
-            exception_vec = self.memory.read_word(self.domain_block_addr + 0x04)
-            if exception_vec != 0:
-                self.state.pc = exception_vec
-                # 回调
-                if self.escalate_handler:
-                    self.escalate_handler(service_type)
-                return
+        # RTL 调用 ISA 接口
+        self.complete_escalate(block_addr, service_type)
 
-        # 没有异常向量，halt
-        self.halted = True
+        if self.rpa:
+            # 模式1: 通过 RPACore 切换域
+            result = self.rpa.escalate(service_type)
+            vector = result.get("vector", 0)
+            if vector:
+                self.state.pc = vector
+            else:
+                self.halted = True
+            # 更新 memtable_chain（移除当前域的页表）
+            if self.memtable_chain:
+                self.memtable_chain = self.memtable_chain[1:]
+        else:
+            # 模式2: 使用回调（向后兼容）
+            if self.memory and block_addr != 0:
+                exception_vec = self.memory.read_word(block_addr + 0x04)
+                if exception_vec != 0:
+                    self.state.pc = exception_vec
+                    if self.escalate_handler:
+                        self.escalate_handler(service_type)
+                    return
 
-        # 回调
-        if self.escalate_handler:
-            result = self.escalate_handler(service_type)
-            if result is not None:
-                self.state.set_reg(0, result)
+            # 没有异常向量，halt
+            self.halted = True
+
+            # 回调
+            if self.escalate_handler:
+                result = self.escalate_handler(service_type)
+                if result is not None:
+                    self.state.set_reg(0, result)
 
     def _execute_return(self, inst: Instruction) -> None:
         """
@@ -793,6 +822,36 @@ class SimpleISA:
         self.state.z = bool(flags & (1 << 30))
         self.state.c = bool(flags & (1 << 29))
         self.state.v = bool(flags & (1 << 28))
+
+    def prepare_descend(self, block_addr: int) -> None:
+        """
+        RTL 在 DESCEND 前自动调用
+
+        ISA 可在此：
+        - 保存当前上下文到 DomainBlock 扩展区
+        - 修改 DomainBlock 参数（如切换线程）
+
+        Args:
+            block_addr: DomainBlock 在内存中的地址
+        """
+        # 默认实现：保存返回地址
+        if self.memory:
+            self.memory.write_word(block_addr + 0x3C, self.state.pc + 4)
+
+    def complete_escalate(self, block_addr: int, service_type: int) -> None:
+        """
+        RTL 在 ESCALATE 后自动调用
+
+        ISA 可在此：
+        - 保存上下文到 DomainBlock 扩展区
+        - 决定返回地址（PC+4 或其他）
+
+        Args:
+            block_addr: 当前域 DomainBlock 在内存中的地址
+            service_type: 服务类型（从 rd 寄存器读取）
+        """
+        # 默认实现：保存上下文
+        self._save_context(block_addr, return_pc=self.state.pc + 4)
 
     def reset(self) -> None:
         """重置核心状态"""
