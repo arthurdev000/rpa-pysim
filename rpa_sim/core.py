@@ -206,28 +206,15 @@ class Domain:
     """
     特权域
 
-    每个域有：
-    - 配置块 (DomainBlock)
-    - 可选的子域列表
-    - 执行上下文
+    每核心每特权层只有一个 DomainBlock。
+    parent 用于错误归属（查找哪层页表出错）。
+
+    Domain 对象在 DESCEND 时动态创建，ESCALATE 时切换回 parent。
     """
     domain_id: int
     block: DomainBlock
     parent: Optional['Domain'] = None
-    children: List['Domain'] = field(default_factory=list)
-    context: Dict[str, Any] = field(default_factory=dict)
-
-    def add_child(self, child: 'Domain') -> int:
-        """添加子域，返回索引"""
-        child.parent = self
-        self.children.append(child)
-        return len(self.children) - 1
-
-    def get_child(self, index: int) -> Optional['Domain']:
-        """获取子域"""
-        if 0 <= index < len(self.children):
-            return self.children[index]
-        return None
+    block_addr: int = 0  # DomainBlock 在内存中的地址
 
 
 @dataclass
@@ -243,10 +230,11 @@ class RPACore:
     """
     RPA 核心 - 域管理
 
-    管理 Domain 层级和特权切换：
-    - descend(): 进入子域
-    - escalate(): 请求父域服务
-    - return_to_child(): 返回子域
+    每核心每特权层只有一个 DomainBlock。
+    硬件只维护 current_domain，通过 parent 链向上查找。
+
+    - descend(): 进入子域（创建新的 Domain 对象）
+    - escalate(): 返回父域
     - fault(): 触发异常
     """
 
@@ -260,9 +248,6 @@ class RPACore:
 
         # 当前执行域
         self.current_domain: Domain = self.root_domain
-
-        # 域栈
-        self.domain_stack: List[Domain] = [self.root_domain]
 
         # 内存引用 (用于读写 DomainBlock)
         self.memory: Any = None
@@ -280,56 +265,47 @@ class RPACore:
             "fault_count": 0,
         }
 
-    def configure_child(self, parent: Domain, block: DomainBlock) -> int:
-        """
-        配置子域
-
-        Args:
-            parent: 父域
-            block: 配置块
-
-        Returns:
-            子域索引
-        """
-        child_id = parent.domain_id * 16 + len(parent.children) + 1
-        child = Domain(domain_id=child_id, block=block)
-        return parent.add_child(child)
-
-    def descend(self, block_addr: int) -> Any:
+    def descend(self, block_addr: int, domain_id: Optional[int] = None) -> Any:
         """
         进入子域
 
         RTL层只负责:
         1. 从内存读取 DomainBlock
-        2. 创建新域
+        2. 创建新域对象（用于错误归属）
         3. 切换到子域
         4. 返回入口信息
 
-        寄存器保存由 Decoder 负责
+        寄存器保存由 ISA 负责（prepare_descend）
+
+        Args:
+            block_addr: DomainBlock 在内存中的地址
+            domain_id: 可选的域 ID（由软件指定，用于错误归属）
         """
         if self.memory is None:
             raise RuntimeError("Memory not set")
 
         block = self._read_domain_block(block_addr)
 
-        # 创建新域
-        new_id = self.current_domain.domain_id * 16 + len(self.current_domain.children) + 1
+        # 创建新域对象（用于错误归属）
+        if domain_id is None:
+            domain_id = self.current_domain.domain_id + 1
+
         new_domain = Domain(
-            domain_id=new_id,
+            domain_id=domain_id,
             block=block,
             parent=self.current_domain,
+            block_addr=block_addr,
         )
 
         # 切换
         self.current_domain = new_domain
-        self.domain_stack.append(new_domain)
 
         self.stats["descend_count"] += 1
 
         return {
             "execution_address": block.execution_address,
             "memtable": block.memtable_address,
-            "domain_id": new_id,
+            "domain_id": domain_id,
         }
 
     def escalate(self, service_type: int) -> Any:
@@ -340,7 +316,7 @@ class RPACore:
         1. 切换到父域
         2. 返回 exception_vector
 
-        状态保存由 Decoder 负责
+        寄存器保存由 ISA 负责（complete_escalate）
         """
         if self.current_domain.parent is None:
             raise RuntimeError("Cannot escalate from root domain")
@@ -355,13 +331,6 @@ class RPACore:
         return {
             "vector": parent.block.exception_vector,
             "domain_id": parent.domain_id,
-        }
-
-    def return_to_child(self, child: Domain) -> Any:
-        """返回子域 (由 Decoder 调用)"""
-        self.current_domain = child
-        return {
-            "domain_id": child.domain_id,
         }
 
     def fault(self, fault_type: str, address: int = 0) -> None:
@@ -381,8 +350,13 @@ class RPACore:
             self._propagate_fault(fault_info)
 
     def get_depth(self) -> int:
-        """获取当前域深度"""
-        return len(self.domain_stack) - 1
+        """获取当前域深度（通过 parent 链计算）"""
+        depth = 0
+        domain = self.current_domain
+        while domain.parent is not None:
+            depth += 1
+            domain = domain.parent
+        return depth
 
     def get_stats(self) -> Dict[str, int]:
         """获取统计信息"""
