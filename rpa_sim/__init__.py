@@ -2,7 +2,7 @@
 RPA Simulator - Recursive Privilege Architecture Concept Verification
 
 Main components:
-- RPACore: Domain hierarchy management
+- RPALogic: Domain hierarchy management
 - Domain, DomainBlock: Privilege domain structures
 - Memory: Physical memory simulation
 - MemoryManager: Page table chain translation
@@ -12,7 +12,7 @@ Main components:
 - Machine: Complete machine integrating all components
 """
 
-from .core import RPACore, Domain, DomainBlock, MemtableEntry, FaultInfo
+from .rpa_logic import RPALogic, Domain, DomainBlock, MemtableEntry, FaultInfo
 from .memory import (
     MemoryManager, PageTable, PageTableEntry, Memory,
     TranslationError, BusError, PermissionError, TranslationResult
@@ -21,10 +21,13 @@ from .isa_simple import SimpleISA, Assembler, CPUState, Instruction, OpCode, Asm
 from .machine import Machine, STDIO_BASE
 from .stdio import StdioDevice, StdioDeviceManager
 
+# Backward compatibility alias
+RPACore = RPALogic
+
 __version__ = "0.6.0"
 __all__ = [
     # Core
-    "RPACore", "Domain", "DomainBlock", "MemtableEntry", "FaultInfo",
+    "RPALogic", "RPACore", "Domain", "DomainBlock", "MemtableEntry", "FaultInfo",
     # Memory
     "MemoryManager", "PageTable", "PageTableEntry", "Memory",
     "TranslationError", "BusError", "PermissionError", "TranslationResult",

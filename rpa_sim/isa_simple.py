@@ -380,7 +380,7 @@ class SimpleISA:
         初始化核心。
 
         Args:
-            rpa: RPACore 实例（管理域状态）
+            rpa: RPALogic 实例（管理域状态）
             memory: Memory 实例（物理内存）
             memory_manager: MemoryManager 实例（带翻译的读写）
         """
@@ -676,7 +676,7 @@ class SimpleISA:
         self.prepare_descend(block_addr)
 
         if self.rpa:
-            # 模式1: 通过 RPACore 切换域
+            # 模式1: 通过 RPALogic 切换域
             result = self.rpa.descend(block_addr)
             execution_addr = result.get("execution_address", 0)
             memtable = result.get("memtable", 0)
@@ -727,7 +727,7 @@ class SimpleISA:
         self.complete_escalate(block_addr, service_type)
 
         if self.rpa:
-            # 模式1: 通过 RPACore 切换域
+            # 模式1: 通过 RPALogic 切换域
             result = self.rpa.escalate(service_type)
             vector = result.get("vector", 0)
             if vector:

@@ -3,7 +3,7 @@ RPA Core Tests - Basic functionality tests
 """
 
 import pytest
-from rpa_sim import RPACore, Domain, DomainBlock, Memory, SimpleISA, MemoryManager
+from rpa_sim import RPALogic, Domain, DomainBlock, Memory, SimpleISA, MemoryManager
 
 
 class TestDomainBlock:
@@ -40,28 +40,28 @@ class TestDomain:
         assert child.domain_id == 1
 
 
-class TestRPACore:
-    """Tests for RPACore"""
+class TestRPALogic:
+    """Tests for RPALogic"""
 
     def test_create_core(self):
-        rpa = RPACore()
+        rpa = RPALogic()
         assert rpa.current_domain is rpa.root_domain
         assert rpa.get_depth() == 0
 
     def test_descend_needs_memory(self):
-        rpa = RPACore()
+        rpa = RPALogic()
 
         with pytest.raises(RuntimeError, match="Memory not set"):
             rpa.descend(0x1000)
 
     def test_escalate_from_root_fails(self):
-        rpa = RPACore()
+        rpa = RPALogic()
 
         with pytest.raises(RuntimeError, match="Cannot escalate from root"):
             rpa.escalate(0)
 
     def test_stats(self):
-        rpa = RPACore()
+        rpa = RPALogic()
         stats = rpa.get_stats()
         assert stats["descend_count"] == 0
         assert stats["escalate_count"] == 0
@@ -259,7 +259,7 @@ class TestIntegration:
 
     def test_domain_block_in_memory(self):
         mem = Memory(size=1024 * 1024)
-        rpa = RPACore()
+        rpa = RPALogic()
         rpa.memory = mem
 
         block = DomainBlock(
