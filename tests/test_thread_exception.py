@@ -3,11 +3,21 @@ Thread and Exception Tests for RPA
 
 使用汇编指令测试 DESCEND/ESCALATE/RETURN 机制。
 所有测试使用单一 Core，让指令真正执行域切换。
+
+DomainBlock 布局:
+    0x00: ctrlblock_size
+    0x04: execution_address
+    0x08: exception_vector
+    0x0C: interrupt_vector
+    0x10: interrupt_ctrl
+    0x14: memtable_address
+    0x18: domain_id
+    0x1C: parent_block
 """
 
 import pytest
 from rpa_sim import (
-    Memory, SimpleISA, MemoryManager, DomainBlock, RPALogic
+    Memory, SimpleISA, MemoryManager, DomainBlock, RPALogic, CTRLBLOCK_SIZE
 )
 
 
@@ -25,9 +35,10 @@ class TestDescendEscalate:
         # 设置控制块
         block_addr = 0x1000
         execution_addr = 0x2000
-        mem.write_word(block_addr + 0x00, execution_addr)  # execution_address
-        mem.write_word(block_addr + 0x04, 0x3000)          # exception_vector
-        mem.write_word(block_addr + 0x10, 0)               # memtable_address
+        mem.write_word(block_addr + 0x00, CTRLBLOCK_SIZE)  # ctrlblock_size
+        mem.write_word(block_addr + 0x04, execution_addr)   # execution_address
+        mem.write_word(block_addr + 0x08, 0)                # exception_vector
+        mem.write_word(block_addr + 0x14, 0)                # memtable_address
 
         # 主程序
         main_code = """
@@ -77,9 +88,10 @@ class TestDescendEscalate:
         mem = Memory(size=64 * 1024)
 
         block_addr = 0x0800
-        mem.write_word(block_addr + 0x00, 0x2000)    # execution_address
-        mem.write_word(block_addr + 0x04, 0x3000)    # exception_vector
-        mem.write_word(block_addr + 0x10, 0x10000)   # memtable_address
+        mem.write_word(block_addr + 0x00, CTRLBLOCK_SIZE)  # ctrlblock_size
+        mem.write_word(block_addr + 0x04, 0x2000)          # execution_address
+        mem.write_word(block_addr + 0x08, 0x3000)          # exception_vector
+        mem.write_word(block_addr + 0x14, 0x10000)         # memtable_address
 
         rpa = RPALogic()
         rpa.memory = mem
@@ -121,9 +133,10 @@ class TestDescendEscalate:
         # 子域控制块
         block_addr = 0x1000
         execution_addr = 0x2000
-        mem.write_word(block_addr + 0x00, execution_addr)
-        mem.write_word(block_addr + 0x04, 0)        # 子域自己的 exception_vector
-        mem.write_word(block_addr + 0x10, 0)
+        mem.write_word(block_addr + 0x00, CTRLBLOCK_SIZE)  # ctrlblock_size
+        mem.write_word(block_addr + 0x04, execution_addr)   # execution_address
+        mem.write_word(block_addr + 0x08, 0)                # exception_vector
+        mem.write_word(block_addr + 0x14, 0)                # memtable_address
 
         rpa = RPALogic()
         rpa.memory = mem
@@ -167,9 +180,10 @@ class TestDescendEscalate:
         mem.write_word(shared_addr, 100)
 
         block_addr = 0x1000
-        mem.write_word(block_addr + 0x00, 0x2000)   # execution_address
-        mem.write_word(block_addr + 0x04, 0)        # exception_vector
-        mem.write_word(block_addr + 0x10, 0)        # memtable_address = 0 (共享)
+        mem.write_word(block_addr + 0x00, CTRLBLOCK_SIZE)  # ctrlblock_size
+        mem.write_word(block_addr + 0x04, 0x2000)          # execution_address
+        mem.write_word(block_addr + 0x08, 0)               # exception_vector
+        mem.write_word(block_addr + 0x14, 0)               # memtable_address = 0 (共享)
 
         rpa = RPALogic()
         rpa.memory = mem
@@ -292,9 +306,10 @@ class TestMemoryTranslation:
 
         # 设置控制块
         block_addr = 0x0800
-        mem.write_word(block_addr + 0x00, 0x2000)    # execution_address
-        mem.write_word(block_addr + 0x04, 0)
-        mem.write_word(block_addr + 0x10, 0x20000)   # memtable_address
+        mem.write_word(block_addr + 0x00, CTRLBLOCK_SIZE)  # ctrlblock_size
+        mem.write_word(block_addr + 0x04, 0x2000)          # execution_address
+        mem.write_word(block_addr + 0x08, 0)               # exception_vector
+        mem.write_word(block_addr + 0x14, 0x20000)         # memtable_address
 
         rpa = RPALogic()
         rpa.memory = mem
@@ -319,8 +334,13 @@ class TestMemoryTranslation:
         # 在 PA 0x3000 写入数据
         mem.write_word(0x3000, 0x12345678)
 
+        # 设置父域的 exception_vector
+        rpa.root_domain.block.exception_vector = 0x4000
+        core.load_assembly("""
+            HALT
+        """, base_addr=0x4000)
+
         core.state.pc = 0x0000
-        core.escalate_handler = lambda x: (setattr(core, 'halted', True), x)[1]
         core.run()
 
         # 子域读到了翻译后的数据
@@ -505,9 +525,10 @@ class TestSharedMemoryThread:
 
         # 线程1的控制块
         block1_addr = 0x0800
-        mem.write_word(block1_addr + 0x00, 0x1000)   # execution_address
-        mem.write_word(block1_addr + 0x04, 0x3000)   # exception_vector
-        mem.write_word(block1_addr + 0x10, 0)        # memtable_address
+        mem.write_word(block1_addr + 0x00, CTRLBLOCK_SIZE)  # ctrlblock_size
+        mem.write_word(block1_addr + 0x04, 0x1000)          # execution_address
+        mem.write_word(block1_addr + 0x08, 0x3000)          # exception_vector
+        mem.write_word(block1_addr + 0x14, 0)               # memtable_address
 
         # 线程1代码
         rpa1 = RPALogic()
@@ -543,9 +564,10 @@ class TestSharedMemoryThread:
 
         # 线程2的控制块
         block2_addr = 0x0900
-        mem.write_word(block2_addr + 0x00, 0x2000)   # execution_address
-        mem.write_word(block2_addr + 0x04, 0x4000)   # exception_vector
-        mem.write_word(block2_addr + 0x10, 0)        # memtable_address
+        mem.write_word(block2_addr + 0x00, CTRLBLOCK_SIZE)  # ctrlblock_size
+        mem.write_word(block2_addr + 0x04, 0x2000)          # execution_address
+        mem.write_word(block2_addr + 0x08, 0x4000)          # exception_vector
+        mem.write_word(block2_addr + 0x14, 0)               # memtable_address
 
         # 重置共享数据
         mem.write_word(shared_addr, 100)

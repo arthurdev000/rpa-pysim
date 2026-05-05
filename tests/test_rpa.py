@@ -101,12 +101,21 @@ class TestSimpleISA:
         """Test DESCEND and ESCALATE instructions"""
         mem = Memory(size=64 * 1024)
 
-        # 设置控制块 - 地址不能和代码重叠
+        # 设置控制块 - 新布局
+        # 0x00: ctrlblock_size
+        # 0x04: execution_address
+        # 0x08: exception_vector
+        # 0x0C: interrupt_vector
+        # 0x10: interrupt_ctrl
+        # 0x14: memtable_address
+        # 0x18: domain_id
+        # 0x1C: parent_block
         block_addr = 0x0800
         child_entry = 0x2000
-        mem.write_word(block_addr + 0x00, child_entry)  # execution_address
-        mem.write_word(block_addr + 0x04, 0)            # exception_vector (子域自己用的)
-        mem.write_word(block_addr + 0x10, 0)            # memtable_address
+        mem.write_word(block_addr + 0x00, 32)         # ctrlblock_size = 32
+        mem.write_word(block_addr + 0x04, child_entry) # execution_address
+        mem.write_word(block_addr + 0x08, 0)           # exception_vector (子域自己用的)
+        mem.write_word(block_addr + 0x14, 0)           # memtable_address
 
         rpa = RPALogic()
         rpa.memory = mem

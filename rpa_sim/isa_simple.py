@@ -716,94 +716,43 @@ class SimpleISA:
         """
         执行 RETURN 指令
 
-        RTL 操作：
-        1. 从控制块恢复 PC
-
-        这是软件可用的原语，具体语义由软件定义
+        这是软件可用的原语，具体语义由软件定义。
+        SimpleISA 默认不实现 RETURN，软件需自行管理返回逻辑。
         """
-        if self.memory and self.domain_block_addr != 0:
-            saved_pc = self.memory.read_word(self.domain_block_addr + 0x3C)
-            if saved_pc != 0:
-                self.state.pc = saved_pc
-                self.halted = False
-
-    def _save_context(self, block_addr: int, return_pc: int = None) -> None:
-        """保存上下文到控制块"""
-        if not self.memory:
-            return
-
-        # 保存返回地址
-        if return_pc is None:
-            return_pc = self.state.pc + 4
-        self.memory.write_word(block_addr + 0x3C, return_pc)
-        self.memory.write_word(block_addr + 0x40, self.state.lr)
-        self.memory.write_word(block_addr + 0x44, self.state.sp)
-
-        # 保存 R0-R12 (0x48-0x78)
-        for i in range(13):
-            self.memory.write_word(block_addr + 0x48 + i * 4, self.state.get_reg(i))
-
-        # 保存标志位到 0x7C (N/Z/C/V)
-        flags = 0
-        if self.state.n:
-            flags |= 1 << 31
-        if self.state.z:
-            flags |= 1 << 30
-        if self.state.c:
-            flags |= 1 << 29
-        if self.state.v:
-            flags |= 1 << 28
-        self.memory.write_word(block_addr + 0x7C, flags)
-
-    def _restore_context(self, block_addr: int) -> None:
-        """从控制块恢复上下文"""
-        if not self.memory:
-            return
-
-        self.state.pc = self.memory.read_word(block_addr + 0x3C)
-        self.state.lr = self.memory.read_word(block_addr + 0x40)
-        self.state.sp = self.memory.read_word(block_addr + 0x44)
-
-        # 恢复 R0-R12 (0x48-0x78)
-        for i in range(13):
-            self.state.set_reg(i, self.memory.read_word(block_addr + 0x48 + i * 4))
-
-        # 恢复标志位从 0x7C (N/Z/C/V)
-        flags = self.memory.read_word(block_addr + 0x7C)
-        self.state.n = bool(flags & (1 << 31))
-        self.state.z = bool(flags & (1 << 30))
-        self.state.c = bool(flags & (1 << 29))
-        self.state.v = bool(flags & (1 << 28))
+        # RETURN 的语义由 ISA 实现定义
+        # SimpleISA 默认不做任何操作
+        pass
 
     def prepare_descend(self, block_addr: int) -> None:
         """
-        RTL 在 DESCEND 前自动调用
+        RPALogic pseudo-RTL 在 DESCEND 前自动调用
 
         ISA 可在此：
-        - 保存当前上下文到 DomainBlock 扩展区
+        - 保存当前上下文（软件自行决定存储位置）
         - 修改 DomainBlock 参数（如切换线程）
 
         Args:
             block_addr: DomainBlock 在内存中的地址
         """
-        # 默认实现：保存返回地址
-        if self.memory:
-            self.memory.write_word(block_addr + 0x3C, self.state.pc + 4)
+        # SimpleISA 默认不保存上下文
+        # 软件需要在控制块之外自行分配空间保存寄存器状态
+        pass
 
     def complete_escalate(self, block_addr: int, service_type: int) -> None:
         """
-        RTL 在 ESCALATE 后自动调用
+        RPALogic pseudo-RTL 在 ESCALATE 后自动调用
 
         ISA 可在此：
-        - 保存上下文到 DomainBlock 扩展区
+        - 保存上下文（软件自行决定存储位置）
         - 决定返回地址（PC+4 或其他）
 
         Args:
             block_addr: 当前域 DomainBlock 在内存中的地址
             service_type: 服务类型（从 rd 寄存器读取）
         """
-        # 默认实现：保存上下文
-        self._save_context(block_addr, return_pc=self.state.pc + 4)
+        # SimpleISA 默认不保存上下文
+        # 软件需要在控制块之外自行分配空间保存寄存器状态
+        pass
 
     def reset(self) -> None:
         """重置核心状态"""
