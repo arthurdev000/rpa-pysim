@@ -39,35 +39,25 @@ DomainBlock (控制块):
 
     ┌────────────────────────────────────────────────────────────────┐
     │                    DomainBlock 内存布局                        │
-    │                     (128 字节, 64字节对齐)                     │
+    │                     (32 字节, 32字节对齐)                      │
     ├────────────┬───────────────────────────────────────────────────┤
     │ 偏移       │ 字段                                              │
     ├────────────┼───────────────────────────────────────────────────┤
-    │ 0x00       │ execution_address   执行地址                      │
-    │ 0x04       │ exception_vector    异常向量                      │
-    │ 0x08       │ interrupt_vector    中断向量                      │
-    │ 0x0C       │ interrupt_ctrl      中断控制器                    │
-    │ 0x10       │ memtable_address    内存区域表地址                │
-    │ 0x14       │ status              状态码 (Decoder上报)          │
-    │ 0x18       │ reserved            保留                          │
-    │ 0x1C       │ padding             填充 (对齐到0x20)             │
+    │ 0x00       │ ctrlblock_size      控制块大小 (含自身)           │
+    │ 0x04       │ execution_address   执行地址                      │
+    │ 0x08       │ exception_vector    异常向量                      │
+    │ 0x0C       │ interrupt_vector    中断向量                      │
+    │ 0x10       │ interrupt_ctrl      中断控制器                    │
+    │ 0x14       │ memtable_address    内存区域表地址                │
+    │ 0x18       │ domain_id           域ID (系统分配，调试用)       │
+    │ 0x1C       │ parent_block        父域控制块地址 (可选)         │
     └────────────┴───────────────────────────────────────────────────┘
 
-    RTL 只处理配置字段 (0x00-0x1C)，其余区域 (0x20-0x7F) 由 ISA 实现
-    自由定义。SimpleISA 的实现如下：
-
-    ┌────────────┬───────────────────────────────────────────────────┐
-    │ 偏移       │ SimpleISA 上下文保存                              │
-    ├────────────┼───────────────────────────────────────────────────┤
-    │ 0x3C       │ saved_pc            保存的 PC                     │
-    │ 0x40       │ saved_lr            保存的 LR                     │
-    │ 0x44       │ saved_sp            保存的 SP                     │
-    │ 0x48       │ R0                  保存的 R0                      │
-    │ 0x4C       │ R1                  保存的 R1                      │
-    │ ...        │ ...                                                │
-    │ 0x78       │ R12                 保存的 R12                     │
-    │ 0x7C       │ saved_flags         保存的标志位 (N/Z/C/V)        │
-    └────────────┴───────────────────────────────────────────────────┘
+    ctrlblock_size 说明:
+    - 必须设置，值不对时 DESCEND 会报错
+    - 最小值: 28 bytes (所有 RPA 字段)
+    - 当前实现固定为 32 bytes
+    - 必须是 32 的倍数
 
 DESCEND 流程:
 =============
@@ -75,19 +65,25 @@ DESCEND 流程:
     父域执行 DESCEND R0 (R0 = 控制块地址):
 
     ┌─────────────────────────────────────────────────────────────────┐
-    │ RTL (硬件)                   │ Decoder (SimpleISA)            │
+    │ RPALogic pseudo-RTL          │ Decoder (SimpleISA)             │
     ├──────────────────────────────┼──────────────────────────────────┤
     │                              │                                 │
     │ 1. 读取控制块:               │                                 │
-    │    entry = [R0 + 0x00]       │                                 │
-    │    exception = [R0 + 0x04]   │                                 │
-    │    memtable = [R0 + 0x10]    │                                 │
+    │    size = [R0 + 0x00]        │                                 │
+    │    验证 size 对齐和范围      │                                 │
+    │    entry = [R0 + 0x04]       │                                 │
+    │    exception = [R0 + 0x08]   │                                 │
+    │    memtable = [R0 + 0x14]    │                                 │
     │                              │                                 │
-    │ 2. 切换到子域:               │                                 │
+    │ 2. 分配 domain_id:           │                                 │
+    │    domain_id = next_id++     │                                 │
+    │    [R0 + 0x18] = domain_id   │                                 │
+    │                              │                                 │
+    │ 3. 切换到子域:               │                                 │
     │    current_domain = child    │                                 │
     │    PC = entry ────────────────▶ Decoder 开始执行               │
     │                              │                                 │
-    │                              │ 3. Decoder 执行代码             │
+    │                              │ 4. Decoder 执行代码             │
     │                              │    ...                          │
     │                              │    ESCALATE R0                  │
     │                              │                                 │
@@ -99,26 +95,20 @@ ESCALATE 流程:
     子域执行 ESCALATE R0 (R0 = 服务类型):
 
     ┌─────────────────────────────────────────────────────────────────┐
-    │ RTL (硬件)                   │ Decoder (SimpleISA)            │
+    │ RPALogic pseudo-RTL          │ Decoder (SimpleISA)             │
     ├──────────────────────────────┼──────────────────────────────────┤
     │                              │                                 │
-    │                              │ 1. Decoder 保存自己的上下文     │
+    │                              │ 1. Decoder 保存上下文           │
     │                              │    (寄存器状态由 Decoder 管理)  │
     │                              │                                 │
-    │                              │ 2. Decoder 写入状态信息:        │
-    │                              │    [block+0x14] = status        │
-    │                              │                                 │
-    │ 3. RTL 读取状态:             │                                 │
-    │    status = [block+0x14]     │                                 │
-    │                              │                                 │
-    │ 4. 切换到父域:               │                                 │
+    │ 2. 切换到父域:               │                                 │
     │    current_domain = parent   │                                 │
     │    PC = parent.exception_vec ─▶ Decoder 跳转到处理程序         │
     │                              │                                 │
-    │                              │ 5. Decoder 处理请求             │
+    │                              │ 3. Decoder 处理请求             │
     │                              │    读取状态、执行服务           │
     │                              │                                 │
-    │                              │ 6. RETURN 返回                  │
+    │                              │ 4. RETURN 返回                  │
     │                              │                                 │
     └──────────────────────────────┴──────────────────────────────────┘
 
@@ -128,22 +118,18 @@ ESCALATE 流程:
     子域触发异常:
 
     ┌─────────────────────────────────────────────────────────────────┐
-    │ RTL (硬件)                   │ Decoder (SimpleISA)            │
+    │ RPALogic pseudo-RTL          │ Decoder (SimpleISA)             │
     ├──────────────────────────────┼──────────────────────────────────┤
     │                              │                                 │
     │                              │ 1. Decoder 检测到异常           │
     │                              │    (缺页、非法指令等)           │
     │                              │                                 │
-    │                              │ 2. Decoder 保存上下文           │
-    │                              │    写入状态信息到控制块:        │
-    │                              │    [block+0x14] = status        │
-    │                              │                                 │
-    │ 3. RTL 检查 exception_vector │                                 │
+    │ 2. 检查 exception_vector     │                                 │
     │    if (== 0) → 传播到父域    │                                 │
     │    else → 跳转处理           │                                 │
     │                              │                                 │
-    │ 4. RTL 切换到父域            │                                 │
-    │    ───────────────────────────▶ 5. Decoder 异常处理            │
+    │ 3. 切换到父域                │                                 │
+    │    ───────────────────────────▶ 4. Decoder 异常处理            │
     │                              │                                 │
     └──────────────────────────────┴──────────────────────────────────┘
 """
@@ -151,6 +137,12 @@ ESCALATE 流程:
 from dataclasses import dataclass, field
 from typing import Any, Optional, List, Dict, Callable
 from enum import Enum, auto
+
+
+# DomainBlock 常量
+CTRLBLOCK_SIZE = 32  # 当前固定大小
+CTRLBLOCK_ALIGN = 32  # 对齐要求
+CTRLBLOCK_MIN_SIZE = 28  # 最小有效大小
 
 
 @dataclass
@@ -182,20 +174,20 @@ class DomainBlock:
 
     父域在内存中分配此结构，然后执行 DESCEND 使配置生效。
 
-    大小: 128 字节
-    对齐: 64 字节边界
+    大小: 32 字节
+    对齐: 32 字节边界
 
     见文件头部 ASCII 图解
     """
     # 配置字段 (父域在 DESCEND 前写入)
-    execution_address: int = 0      # 0x00: 执行地址
-    exception_vector: int = 0      # 0x04: 异常向量
-    interrupt_vector: int = 0      # 0x08: 中断向量
-    interrupt_ctrl: int = 0        # 0x0C: 中断控制器
-    memtable_address: int = 0      # 0x10: 内存区域表地址
-    status: int = 0                # 0x14: 状态码 (Decoder上报)
-    reserved: int = 0              # 0x18: 保留
-    padding: int = 0               # 0x1C: 填充 (对齐到0x20)
+    ctrlblock_size: int = CTRLBLOCK_SIZE   # 0x00: 控制块大小
+    execution_address: int = 0              # 0x04: 执行地址
+    exception_vector: int = 0               # 0x08: 异常向量
+    interrupt_vector: int = 0               # 0x0C: 中断向量
+    interrupt_ctrl: int = 0                 # 0x10: 中断控制器
+    memtable_address: int = 0               # 0x14: 内存区域表地址
+    domain_id: int = 0                      # 0x18: 域ID (系统分配)
+    parent_block: int = 0                   # 0x1C: 父域控制块地址 (可选)
 
     # 向后兼容字段
     params: Dict[str, Any] = field(default_factory=dict)
@@ -225,7 +217,11 @@ class FaultInfo:
     fault_type: str
     domain: int
     address: int = 0
-    context: Dict[str, Any] = field(default_factory=dict)
+
+
+class DomainBlockError(Exception):
+    """DomainBlock 验证错误"""
+    pass
 
 
 class RPALogic:
@@ -241,10 +237,15 @@ class RPALogic:
     """
 
     def __init__(self):
+        # 域ID分配器
+        self._next_domain_id = 1
+
         # 根域 (domain_id = 0)
         root_block = DomainBlock(
+            ctrlblock_size=CTRLBLOCK_SIZE,
             execution_address=0x8000,
             exception_vector=0x8004,
+            domain_id=0,
         )
         self.root_domain: Domain = Domain(domain_id=0, block=root_block)
 
@@ -267,15 +268,42 @@ class RPALogic:
             "fault_count": 0,
         }
 
+    def _validate_ctrlblock(self, addr: int) -> None:
+        """验证控制块大小和对齐"""
+        if self.memory is None:
+            raise RuntimeError("Memory not set")
+
+        # 检查对齐
+        if addr % CTRLBLOCK_ALIGN != 0:
+            raise DomainBlockError(
+                f"DomainBlock at 0x{addr:x} not aligned to {CTRLBLOCK_ALIGN} bytes"
+            )
+
+        # 读取大小字段
+        size = self.memory.read_word(addr + 0x00)
+
+        # 检查大小有效性
+        if size < CTRLBLOCK_MIN_SIZE:
+            raise DomainBlockError(
+                f"DomainBlock size {size} too small (minimum {CTRLBLOCK_MIN_SIZE})"
+            )
+
+        if size % CTRLBLOCK_ALIGN != 0:
+            raise DomainBlockError(
+                f"DomainBlock size {size} not aligned to {CTRLBLOCK_ALIGN} bytes"
+            )
+
     def descend(self, block_addr: int, domain_id: Optional[int] = None) -> Any:
         """
         进入子域
 
-        RTL层只负责:
-        1. 从内存读取 DomainBlock
-        2. 创建新域对象（用于错误归属）
-        3. 切换到子域
-        4. 返回入口信息
+        RPALogic pseudo-RTL 层负责:
+        1. 验证 ctrlblock_size
+        2. 从内存读取 DomainBlock
+        3. 分配 domain_id
+        4. 创建新域对象（用于错误归属）
+        5. 切换到子域
+        6. 返回入口信息
 
         寄存器保存由 ISA 负责（prepare_descend）
 
@@ -283,15 +311,22 @@ class RPALogic:
             block_addr: DomainBlock 在内存中的地址
             domain_id: 可选的域 ID（由软件指定，用于错误归属）
         """
-        if self.memory is None:
-            raise RuntimeError("Memory not set")
+        # 验证控制块
+        self._validate_ctrlblock(block_addr)
 
         block = self._read_domain_block(block_addr)
 
-        # 创建新域对象（用于错误归属）
+        # 分配 domain_id
         if domain_id is None:
-            domain_id = self.current_domain.domain_id + 1
+            domain_id = self._next_domain_id
+            self._next_domain_id += 1
 
+        # 写入 domain_id 到控制块
+        block.domain_id = domain_id
+        if self.memory:
+            self.memory.write_word(block_addr + 0x18, domain_id)
+
+        # 创建新域对象（用于错误归属）
         new_domain = Domain(
             domain_id=domain_id,
             block=block,
@@ -314,7 +349,7 @@ class RPALogic:
         """
         请求父域服务
 
-        RTL层只负责:
+        RPALogic pseudo-RTL 层只负责:
         1. 切换到父域
         2. 返回 exception_vector
 
@@ -367,24 +402,28 @@ class RPALogic:
         """从内存读取 DomainBlock"""
         if self.memory:
             return DomainBlock(
-                execution_address=self.memory.read_word(addr + 0x00),
-                exception_vector=self.memory.read_word(addr + 0x04),
-                interrupt_vector=self.memory.read_word(addr + 0x08),
-                interrupt_ctrl=self.memory.read_word(addr + 0x0C),
-                memtable_address=self.memory.read_word(addr + 0x10),
-                status=self.memory.read_word(addr + 0x14),
+                ctrlblock_size=self.memory.read_word(addr + 0x00),
+                execution_address=self.memory.read_word(addr + 0x04),
+                exception_vector=self.memory.read_word(addr + 0x08),
+                interrupt_vector=self.memory.read_word(addr + 0x0C),
+                interrupt_ctrl=self.memory.read_word(addr + 0x10),
+                memtable_address=self.memory.read_word(addr + 0x14),
+                domain_id=self.memory.read_word(addr + 0x18),
+                parent_block=self.memory.read_word(addr + 0x1C),
             )
         return DomainBlock()
 
     def _write_domain_block(self, addr: int, block: DomainBlock) -> None:
         """写入 DomainBlock 到内存"""
         if self.memory:
-            self.memory.write_word(addr + 0x00, block.execution_address)
-            self.memory.write_word(addr + 0x04, block.exception_vector)
-            self.memory.write_word(addr + 0x08, block.interrupt_vector)
-            self.memory.write_word(addr + 0x0C, block.interrupt_ctrl)
-            self.memory.write_word(addr + 0x10, block.memtable_address)
-            self.memory.write_word(addr + 0x14, block.status)
+            self.memory.write_word(addr + 0x00, block.ctrlblock_size)
+            self.memory.write_word(addr + 0x04, block.execution_address)
+            self.memory.write_word(addr + 0x08, block.exception_vector)
+            self.memory.write_word(addr + 0x0C, block.interrupt_vector)
+            self.memory.write_word(addr + 0x10, block.interrupt_ctrl)
+            self.memory.write_word(addr + 0x14, block.memtable_address)
+            self.memory.write_word(addr + 0x18, block.domain_id)
+            self.memory.write_word(addr + 0x1C, block.parent_block)
 
     def _get_pc(self) -> int:
         """获取当前 PC"""
@@ -394,9 +433,6 @@ class RPALogic:
 
     def _handle_fault(self, fault_info: FaultInfo) -> None:
         """处理异常"""
-        self.current_domain.block.status = self._fault_type_to_code(fault_info.fault_type)
-        self.current_domain.block.status_addr = fault_info.address
-
         handler = self.exception_handlers.get(fault_info.fault_type)
         if handler:
             handler(fault_info)
@@ -407,9 +443,6 @@ class RPALogic:
         """传播异常到父域"""
         if self.current_domain.parent is None:
             raise RuntimeError(f"Unhandled fault at root: {fault_info}")
-
-        # 设置状态信息（供父域读取）
-        self.current_domain.block.status = self._fault_type_to_code(fault_info.fault_type)
 
         # escalate() 会切换到父域并返回 exception_vector
         # 由 Decoder 负责跳转到 exception_vector 执行处理程序
