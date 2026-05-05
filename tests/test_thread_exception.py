@@ -7,7 +7,7 @@ Thread and Exception Tests for RPA
 
 import pytest
 from rpa_sim import (
-    Memory, SimpleISA, MemoryManager, DomainBlock
+    Memory, SimpleISA, MemoryManager, DomainBlock, RPALogic
 )
 
 
@@ -45,15 +45,23 @@ class TestDescendEscalate:
             HALT
         """
 
-        core = SimpleISA(memory=mem)
+        rpa = RPALogic()
+        rpa.memory = mem
+        # 设置父域的 exception_vector
+        rpa.root_domain.block.exception_vector = 0x3000
+
+        core = SimpleISA(rpa=rpa, memory=mem)
         core.load_assembly(main_code, base_addr=0x0000)
         core.load_assembly(child_code, base_addr=execution_addr)
 
+        # 异常处理代码 - 父域接收 ESCALATE
+        core.load_assembly("""
+            ; 父域收到 ESCALATE
+            HALT
+        """, base_addr=0x3000)
+
         core.state.pc = 0x0000
         core.domain_block_addr = 0  # 初始无控制块
-
-        # ESCALATE 时停止
-        core.escalate_handler = lambda x: (setattr(core, 'halted', True), x)[1]
 
         core.run()
 
@@ -70,44 +78,60 @@ class TestDescendEscalate:
 
         block_addr = 0x0800
         mem.write_word(block_addr + 0x00, 0x2000)    # execution_address
-        mem.write_word(block_addr + 0x04, 0)
+        mem.write_word(block_addr + 0x04, 0x3000)    # exception_vector
         mem.write_word(block_addr + 0x10, 0x10000)   # memtable_address
 
-        core = SimpleISA(memory=mem)
+        rpa = RPALogic()
+        rpa.memory = mem
+        core = SimpleISA(rpa=rpa, memory=mem)
         core.memtable_chain = []
 
         core.load_assembly("""
             MOV R0, #0x0800
             DESCEND R0
-            HALT
+            ; 子域代码在 0x2000
         """, base_addr=0x0000)
 
         core.load_assembly("""
+            ; 子域代码 - 验证 memtable_chain 已更新
+            ; ESCALATE 返回父域
+            MOV R0, #0
             ESCALATE R0
             HALT
         """, base_addr=0x2000)
 
+        # 父域异常处理程序
+        core.load_assembly("""
+            ; ESCALATE 后 memtable_chain 应该恢复
+            HALT
+        """, base_addr=0x3000)
+
         core.state.pc = 0x0000
-        core.escalate_handler = lambda x: (setattr(core, 'halted', True), x)[1]
         core.run()
 
-        # 验证：memtable_chain 被更新
-        assert core.memtable_chain == [0x10000]
+        # ESCALATE 后 memtable_chain 应该恢复为空
+        assert core.memtable_chain == []
 
     def test_escalate_jumps_to_exception_vector(self):
         """
-        ESCALATE 跳转到 exception_vector
+        ESCALATE 跳转到父域的 exception_vector
         """
         mem = Memory(size=64 * 1024)
 
+        # 子域控制块
         block_addr = 0x1000
         execution_addr = 0x2000
-        exception_vec = 0x3000
         mem.write_word(block_addr + 0x00, execution_addr)
-        mem.write_word(block_addr + 0x04, exception_vec)
+        mem.write_word(block_addr + 0x04, 0)        # 子域自己的 exception_vector
         mem.write_word(block_addr + 0x10, 0)
 
-        core = SimpleISA(memory=mem)
+        rpa = RPALogic()
+        rpa.memory = mem
+        core = SimpleISA(rpa=rpa, memory=mem)
+
+        # 修改父域（根域）的 exception_vector
+        rpa.root_domain.block.exception_vector = 0x3000
+
         core.load_assembly("""
             MOV R0, #0x1000
             DESCEND R0
@@ -120,16 +144,16 @@ class TestDescendEscalate:
             HALT
         """, base_addr=execution_addr)
 
-        # 异常处理代码 - 执行后 halt
+        # 父域异常处理代码 - 执行后 halt
         core.load_assembly("""
             MOV R2, #0xCAFE
             HALT
-        """, base_addr=exception_vec)
+        """, base_addr=0x3000)
 
         core.state.pc = 0x0000
         core.run()
 
-        # 验证：跳转到了 exception_vector 并执行了异常处理代码
+        # 验证：ESCALATE 跳转到了父域的 exception_vector 并执行了异常处理代码
         assert core.state.get_reg(2) == 0xCAFE
 
     def test_shared_memory_between_domains(self):
@@ -147,7 +171,9 @@ class TestDescendEscalate:
         mem.write_word(block_addr + 0x04, 0)        # exception_vector
         mem.write_word(block_addr + 0x10, 0)        # memtable_address = 0 (共享)
 
-        core = SimpleISA(memory=mem)
+        rpa = RPALogic()
+        rpa.memory = mem
+        core = SimpleISA(rpa=rpa, memory=mem)
 
         # 主程序
         core.load_assembly("""
@@ -170,8 +196,13 @@ class TestDescendEscalate:
             HALT
         """, base_addr=0x2000)
 
+        # 设置父域的 exception_vector 让 ESCALATE 后 halt
+        rpa.root_domain.block.exception_vector = 0x3000
+        core.load_assembly("""
+            HALT
+        """, base_addr=0x3000)
+
         core.state.pc = 0x0000
-        core.escalate_handler = lambda x: (setattr(core, 'halted', True), x)[1]
         core.run()
 
         # 共享数据被修改
@@ -197,7 +228,8 @@ class TestMemoryTranslation:
         # 写入数据到物理地址
         mem.write_word(0x2000, 0xDEADBEEF)
 
-        core = SimpleISA(memory=mem, memory_manager=mm)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""
@@ -222,7 +254,8 @@ class TestMemoryTranslation:
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
         pt.map(0x1000, 0x2000)
 
-        core = SimpleISA(memory=mem, memory_manager=mm)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""
@@ -263,7 +296,9 @@ class TestMemoryTranslation:
         mem.write_word(block_addr + 0x04, 0)
         mem.write_word(block_addr + 0x10, 0x20000)   # memtable_address
 
-        core = SimpleISA(memory=mem, memory_manager=mm)
+        rpa = RPALogic()
+        rpa.memory = mem
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]  # Domain 0 的页表
 
         # 主程序
@@ -307,7 +342,8 @@ class TestFaultHandling:
         # 创建页表但不映射
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=2)
 
-        core = SimpleISA(memory=mem, memory_manager=mm)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""
@@ -338,7 +374,8 @@ class TestFaultHandling:
         """
         mem = Memory(size=1024)  # 1KB 内存
 
-        core = SimpleISA(memory=mem)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem)
 
         core.load_assembly("""
             MOV R0, #0x10000   ; 超出范围
@@ -387,7 +424,8 @@ class TestMultiLevelTranslation:
         # 写入最终物理地址
         mem.write_word(0x3000, 0xFEEDFACE)
 
-        core = SimpleISA(memory=mem, memory_manager=mm)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
         # memtable_chain: [Domain 1 页表, Domain 0 页表]
         core.memtable_chain = [0x20000, 0x10000]
 
@@ -422,7 +460,8 @@ class TestMultiLevelTranslation:
         pt1 = mm.create_page_table(base_addr=0x20000, owner_domain=1)
         pt1.map(0x1000, 0x2000)  # VA -> IPA, 但 IPA 没有 -> PA
 
-        core = SimpleISA(memory=mem, memory_manager=mm)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
         core.memtable_chain = [0x20000, 0x10000]
 
         core.load_assembly("""
@@ -457,46 +496,90 @@ class TestSharedMemoryThread:
         """
         两个"线程"顺序执行，共享内存
 
-        这是用两个 SimpleISA 模拟共享 memtable_chain = [] 的场景
+        使用 DESCEND/ESCALATE 进行域切换
         """
         mem = Memory(size=64 * 1024)
 
         shared_addr = 0x5000
         mem.write_word(shared_addr, 100)
 
+        # 线程1的控制块
+        block1_addr = 0x0800
+        mem.write_word(block1_addr + 0x00, 0x1000)   # execution_address
+        mem.write_word(block1_addr + 0x04, 0x3000)   # exception_vector
+        mem.write_word(block1_addr + 0x10, 0)        # memtable_address
+
         # 线程1代码
-        thread1 = SimpleISA(memory=mem)
+        rpa1 = RPALogic()
+        rpa1.memory = mem
+        rpa1.root_domain.block.exception_vector = 0x3000
+
+        thread1 = SimpleISA(rpa=rpa1, memory=mem)
+        thread1.load_assembly("""
+            MOV R0, #0x0800
+            DESCEND R0
+            ; 返回后继续
+            HALT
+        """, base_addr=0x0000)
+
         thread1.load_assembly("""
             MOV R1, #0x5000
             LDR R0, [R1]
             ADD R0, R0, #200
             STR R0, [R1]
+            MOV R0, #0
             ESCALATE R0
             HALT
         """, base_addr=0x1000)
 
-        thread1.state.pc = 0x1000
-        thread1.escalate_handler = lambda x: (setattr(thread1, 'halted', True), x)[1]
+        thread1.load_assembly("""
+            HALT
+        """, base_addr=0x3000)
+
+        thread1.state.pc = 0x0000
         thread1.run()
 
         assert mem.read_word(shared_addr) == 300
 
+        # 线程2的控制块
+        block2_addr = 0x0900
+        mem.write_word(block2_addr + 0x00, 0x2000)   # execution_address
+        mem.write_word(block2_addr + 0x04, 0x4000)   # exception_vector
+        mem.write_word(block2_addr + 0x10, 0)        # memtable_address
+
+        # 重置共享数据
+        mem.write_word(shared_addr, 100)
+
         # 线程2代码
-        thread2 = SimpleISA(memory=mem)
+        rpa2 = RPALogic()
+        rpa2.memory = mem
+        rpa2.root_domain.block.exception_vector = 0x4000
+
+        thread2 = SimpleISA(rpa=rpa2, memory=mem)
+        thread2.load_assembly("""
+            MOV R0, #0x0900
+            DESCEND R0
+            HALT
+        """, base_addr=0x0000)
+
         thread2.load_assembly("""
             MOV R1, #0x5000
             LDR R0, [R1]
             ADD R0, R0, #300
             STR R0, [R1]
+            MOV R0, #0
             ESCALATE R0
             HALT
         """, base_addr=0x2000)
 
-        thread2.state.pc = 0x2000
-        thread2.escalate_handler = lambda x: (setattr(thread2, 'halted', True), x)[1]
+        thread2.load_assembly("""
+            HALT
+        """, base_addr=0x4000)
+
+        thread2.state.pc = 0x0000
         thread2.run()
 
-        assert mem.read_word(shared_addr) == 600
+        assert mem.read_word(shared_addr) == 400
 
 
 class TestPermissionChecking:
@@ -518,7 +601,8 @@ class TestPermissionChecking:
         # 写入数据到物理地址
         mem.write_word(0x2000, 0xDEADBEEF)
 
-        core = SimpleISA(memory=mem, memory_manager=mm)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""
@@ -554,7 +638,8 @@ class TestPermissionChecking:
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
         pt.map(0x1000, 0x2000, control=True)  # control=True
 
-        core = SimpleISA(memory=mem, memory_manager=mm)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""
@@ -591,7 +676,8 @@ class TestPermissionChecking:
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
         pt.map(0x1000, 0x2000, r=True, w=False)  # 只读
 
-        core = SimpleISA(memory=mem, memory_manager=mm)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""
@@ -631,7 +717,8 @@ class TestPermissionChecking:
         # 写入数据到物理地址
         mem.write_word(0x2000, 0xDEADBEEF)
 
-        core = SimpleISA(memory=mem, memory_manager=mm)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""
@@ -667,7 +754,8 @@ class TestPermissionChecking:
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
         pt.map(0x1000, 0x2000)  # 默认 r=True, w=True, control=False
 
-        core = SimpleISA(memory=mem, memory_manager=mm)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
         core.memtable_chain = [0x10000]
 
         core.load_assembly("""

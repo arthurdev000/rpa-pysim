@@ -341,7 +341,6 @@ class RPALogic:
             fault_type=fault_type,
             domain=self.current_domain.domain_id,
             address=address,
-            context=self.current_domain.context.copy(),
         )
 
         self.stats["fault_count"] += 1

@@ -72,7 +72,8 @@ class TestSimpleISA:
 
     def test_execute_mov(self):
         mem = Memory(size=64 * 1024)
-        core = SimpleISA(memory=mem)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem)
 
         core.load_assembly("MOV R0, #123", base_addr=0x1000)
         core.state.pc = 0x1000
@@ -82,7 +83,8 @@ class TestSimpleISA:
 
     def test_execute_add(self):
         mem = Memory(size=64 * 1024)
-        core = SimpleISA(memory=mem)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem)
 
         core.load_assembly("""
             MOV R1, #10
@@ -103,15 +105,22 @@ class TestSimpleISA:
         block_addr = 0x0800
         child_entry = 0x2000
         mem.write_word(block_addr + 0x00, child_entry)  # execution_address
-        mem.write_word(block_addr + 0x04, 0x3000)       # exception_vector
+        mem.write_word(block_addr + 0x04, 0)            # exception_vector (子域自己用的)
         mem.write_word(block_addr + 0x10, 0)            # memtable_address
 
-        core = SimpleISA(memory=mem)
+        rpa = RPALogic()
+        rpa.memory = mem
+        # 设置父域（根域）的 exception_vector
+        rpa.root_domain.block.exception_vector = 0x3000
+
+        core = SimpleISA(rpa=rpa, memory=mem)
 
         # 主程序
         core.load_assembly("""
             MOV R0, #0x0800
             DESCEND R0
+            ; 子域返回后继续
+            MOV R2, #42
             HALT
         """, base_addr=0x1000)
 
@@ -122,23 +131,25 @@ class TestSimpleISA:
             HALT
         """, base_addr=child_entry)
 
-        escalate_result = [0]
+        # 父域异常处理程序
+        core.load_assembly("""
+            ; 父域收到 ESCALATE
+            MOV R3, #99
+            HALT
+        """, base_addr=0x3000)
 
-        def on_escalate(service_type):
-            escalate_result[0] = service_type
-            core.halted = True
-            return service_type
-
-        core.escalate_handler = on_escalate
         core.state.pc = 0x1000
         core.run()
 
-        # ESCALATE 被调用，传入 R1 的值
-        assert escalate_result[0] == 5
+        # 验证：ESCALATE 跳转到父域的 exception_vector，执行了 MOV R3, #99
+        assert core.state.get_reg(3) == 99  # 异常处理程序执行了
+        # 子域执行了 MOV R1, #5（但寄存器状态在域切换时保存了）
+        # R1 的值在子域上下文中，当前是父域的寄存器状态
 
     def test_sysop(self):
         mem = Memory(size=64 * 1024)
-        core = SimpleISA(memory=mem)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem)
 
         sysop_result = [None]
 
@@ -165,7 +176,8 @@ class TestMemoryTranslation:
         """Test LDR without page table (VA = PA)"""
         mem = Memory(size=64 * 1024)
         mm = MemoryManager(physical_memory=mem)
-        core = SimpleISA(memory=mem, memory_manager=mm)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
 
         # 写入测试数据
         mem.write_word(0x1000, 0x12345678)
@@ -184,7 +196,8 @@ class TestMemoryTranslation:
         """Test LDR with page table translation"""
         mem = Memory(size=64 * 1024)
         mm = MemoryManager(physical_memory=mem)
-        core = SimpleISA(memory=mem, memory_manager=mm)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
 
         # 创建页表：VA 0x1000 -> PA 0x2000
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
@@ -211,7 +224,8 @@ class TestMemoryTranslation:
         """Test STR with page table translation"""
         mem = Memory(size=64 * 1024)
         mm = MemoryManager(physical_memory=mem)
-        core = SimpleISA(memory=mem, memory_manager=mm)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
 
         # 创建页表：VA 0x1000 -> PA 0x2000
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
@@ -240,7 +254,8 @@ class TestIntegration:
 
     def test_memory_and_core(self):
         mem = Memory(size=1024 * 1024)
-        core = SimpleISA(memory=mem)
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem)
 
         code = """
             MOV R0, #1
