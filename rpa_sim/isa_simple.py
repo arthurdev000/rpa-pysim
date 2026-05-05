@@ -371,11 +371,11 @@ class SimpleISA:
 
     DESCEND/ESCALATE/RETURN 指令:
     - DESCEND: 读取 DomainBlock，跳转到 execution_address
-    - ESCALATE: 保存上下文，触发 escalate_handler
-    - RETURN: 恢复上下文，继续执行
+    - ESCALATE: 保存上下文，切换到父域
+    - RETURN: 从控制块恢复上下文
     """
 
-    def __init__(self, rpa=None, memory=None, memory_manager=None):
+    def __init__(self, rpa, memory=None, memory_manager=None):
         """
         初始化核心。
 
@@ -401,10 +401,7 @@ class SimpleISA:
         self.labels: Dict[str, int] = {}
         self.assembler = Assembler()
 
-        # 回调处理器（可选，用于高层模拟）
-        self.descend_handler: Optional[Callable] = None
-        self.escalate_handler: Optional[Callable] = None
-        self.return_handler: Optional[Callable] = None
+        # 回调处理器（可选，用于测试和扩展）
         self.sysop_handler: Optional[Callable] = None
         self.fault_handler: Optional[Callable] = None
 
@@ -675,41 +672,19 @@ class SimpleISA:
         # RTL 调用 ISA 接口
         self.prepare_descend(block_addr)
 
-        if self.rpa:
-            # 模式1: 通过 RPALogic 切换域
-            result = self.rpa.descend(block_addr)
-            execution_addr = result.get("execution_address", 0)
-            memtable = result.get("memtable", 0)
-            if execution_addr:
-                self.state.pc = execution_addr
-            else:
-                self.halted = True
-            # 更新 memtable_chain
-            if memtable != 0:
-                self.memtable_chain = [memtable] + self.memtable_chain
-            # 更新 domain_block_addr
-            self.domain_block_addr = block_addr
+        # 通过 RPALogic 切换域
+        result = self.rpa.descend(block_addr)
+        execution_addr = result.get("execution_address", 0)
+        memtable = result.get("memtable", 0)
+        if execution_addr:
+            self.state.pc = execution_addr
         else:
-            # 模式2: 使用回调（向后兼容）
-            if self.memory:
-                execution_addr = self.memory.read_word(block_addr + 0x00)
-                memtable_addr = self.memory.read_word(block_addr + 0x10)
-                # 更新 memtable_chain
-                if memtable_addr != 0:
-                    self.memtable_chain = [memtable_addr] + self.memtable_chain
-                # 更新 domain_block_addr
-                self.domain_block_addr = block_addr
-                # 跳转到执行地址
-                if execution_addr != 0:
-                    self.state.pc = execution_addr
-                else:
-                    self.halted = True
-
-            # 回调
-            if self.descend_handler:
-                result = self.descend_handler(block_addr)
-                if result is not None:
-                    self.state.set_reg(0, result)
+            self.halted = True
+        # 更新 memtable_chain
+        if memtable != 0:
+            self.memtable_chain = [memtable] + self.memtable_chain
+        # 更新 domain_block_addr
+        self.domain_block_addr = block_addr
 
     def _execute_escalate(self, inst: Instruction) -> None:
         """
@@ -726,35 +701,16 @@ class SimpleISA:
         # RTL 调用 ISA 接口
         self.complete_escalate(block_addr, service_type)
 
-        if self.rpa:
-            # 模式1: 通过 RPALogic 切换域
-            result = self.rpa.escalate(service_type)
-            vector = result.get("vector", 0)
-            if vector:
-                self.state.pc = vector
-            else:
-                self.halted = True
-            # 更新 memtable_chain（移除当前域的页表）
-            if self.memtable_chain:
-                self.memtable_chain = self.memtable_chain[1:]
+        # 通过 RPALogic 切换域
+        result = self.rpa.escalate(service_type)
+        vector = result.get("vector", 0)
+        if vector:
+            self.state.pc = vector
         else:
-            # 模式2: 使用回调（向后兼容）
-            if self.memory and block_addr != 0:
-                exception_vec = self.memory.read_word(block_addr + 0x04)
-                if exception_vec != 0:
-                    self.state.pc = exception_vec
-                    if self.escalate_handler:
-                        self.escalate_handler(service_type)
-                    return
-
-            # 没有异常向量，halt
             self.halted = True
-
-            # 回调
-            if self.escalate_handler:
-                result = self.escalate_handler(service_type)
-                if result is not None:
-                    self.state.set_reg(0, result)
+        # 更新 memtable_chain（移除当前域的页表）
+        if self.memtable_chain:
+            self.memtable_chain = self.memtable_chain[1:]
 
     def _execute_return(self, inst: Instruction) -> None:
         """
@@ -770,10 +726,6 @@ class SimpleISA:
             if saved_pc != 0:
                 self.state.pc = saved_pc
                 self.halted = False
-
-        # 回调
-        if self.return_handler:
-            self.return_handler(self.state.get_reg(0))
 
     def _save_context(self, block_addr: int, return_pc: int = None) -> None:
         """保存上下文到控制块"""
