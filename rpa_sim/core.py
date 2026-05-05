@@ -51,7 +51,21 @@ DomainBlock (控制块):
     │ 0x14       │ status              状态码 (Decoder上报)          │
     │ 0x18       │ reserved            保留                          │
     │ 0x1C       │ padding             填充 (对齐到0x20)             │
+    ├────────────┼───────────────────────────────────────────────────┤
+    │ 0x20-0x3B  │ context_reserved   上下文区保留 (软件使用)        │
+    ├────────────┼───────────────────────────────────────────────────┤
+    │ 0x3C       │ saved_pc            保存的 PC (Decoder)           │
+    │ 0x40       │ saved_lr            保存的 LR (Decoder)           │
+    │ 0x44       │ saved_sp            保存的 SP (Decoder)           │
+    │ 0x48       │ R0                  保存的 R0                      │
+    │ 0x4C       │ R1                  保存的 R1                      │
+    │ ...        │ ...                                                │
+    │ 0x78       │ R12                 保存的 R12                     │
+    │ 0x7C       │ saved_flags         保存的标志位 (N/Z/C/V)        │
     └────────────┴───────────────────────────────────────────────────┘
+
+    上下文保存区 (0x3C-0x7C) 由 Decoder 在 ESCALATE/异常时保存，
+    在 RETURN 时恢复。RTL 只处理配置字段 (0x00-0x1C)。
 
 DESCEND 流程:
 =============
@@ -90,11 +104,10 @@ ESCALATE 流程:
     │                              │    (寄存器状态由 Decoder 管理)  │
     │                              │                                 │
     │                              │ 2. Decoder 写入状态信息:        │
-    │                              │    [block+0x80] = status        │
-    │                              │    [block+0x84] = addr          │
+    │                              │    [block+0x14] = status        │
     │                              │                                 │
     │ 3. RTL 读取状态:             │                                 │
-    │    status = [block+0x80]     │                                 │
+    │    status = [block+0x14]     │                                 │
     │                              │                                 │
     │ 4. 切换到父域:               │                                 │
     │    current_domain = parent   │                                 │
@@ -120,8 +133,8 @@ ESCALATE 流程:
     │                              │    (缺页、非法指令等)           │
     │                              │                                 │
     │                              │ 2. Decoder 保存上下文           │
-    │                              │    写入状态信息到控制块         │
-    │                              │    [block+0x80] = status        │
+    │                              │    写入状态信息到控制块:        │
+    │                              │    [block+0x14] = status        │
     │                              │                                 │
     │ 3. RTL 检查 exception_vector │                                 │
     │    if (== 0) → 传播到父域    │                                 │
@@ -420,10 +433,12 @@ class RPACore:
         if self.current_domain.parent is None:
             raise RuntimeError(f"Unhandled fault at root: {fault_info}")
 
-        old_domain = self.current_domain
-        self.current_domain = self.current_domain.parent
+        # 设置状态信息（供父域读取）
+        self.current_domain.block.status = self._fault_type_to_code(fault_info.fault_type)
+
+        # escalate() 会切换到父域并返回 exception_vector
+        # 由 Decoder 负责跳转到 exception_vector 执行处理程序
         self.escalate(0x01)  # FAULT 类型
-        self.current_domain = old_domain
 
     def _fault_type_to_code(self, fault_type: str) -> int:
         """转换异常类型到代码"""
