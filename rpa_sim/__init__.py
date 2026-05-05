@@ -8,7 +8,7 @@ Main components:
 - MemoryManager: Page table chain translation
 - PageTable, PageTableEntry: Page table structures
 - TranslationError, BusError, PermissionError: Address translation exceptions
-- SimpleCore: Simplified instruction set core (ARM-like)
+- SimpleISA: Simplified instruction set core (ARM-like)
 - Machine: Complete machine integrating all components
 """
 
@@ -17,7 +17,7 @@ from .memory import (
     MemoryManager, PageTable, PageTableEntry, Memory,
     TranslationError, BusError, PermissionError, TranslationResult
 )
-from .emulator import SimpleCore, Assembler, CPUState, Instruction, OpCode, Asm
+from .isa_simple import SimpleISA, Assembler, CPUState, Instruction, OpCode, Asm
 from .machine import Machine, STDIO_BASE
 from .stdio import StdioDevice, StdioDeviceManager
 
@@ -28,8 +28,8 @@ __all__ = [
     # Memory
     "MemoryManager", "PageTable", "PageTableEntry", "Memory",
     "TranslationError", "BusError", "PermissionError", "TranslationResult",
-    # Emulator
-    "SimpleCore", "Assembler", "CPUState", "Instruction", "OpCode", "Asm",
+    # ISA
+    "SimpleISA", "Assembler", "CPUState", "Instruction", "OpCode", "Asm",
     # Machine
     "Machine", "STDIO_BASE",
     # Stdio

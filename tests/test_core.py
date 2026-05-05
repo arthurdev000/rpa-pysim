@@ -3,7 +3,7 @@ RPA Core Tests - Basic functionality tests
 """
 
 import pytest
-from rpa_sim import RPACore, Domain, DomainBlock, Memory, SimpleCore, MemoryManager
+from rpa_sim import RPACore, Domain, DomainBlock, Memory, SimpleISA, MemoryManager
 
 
 class TestDomainBlock:
@@ -84,12 +84,12 @@ class TestRPACore:
         assert stats["escalate_count"] == 0
 
 
-class TestSimpleCore:
-    """Tests for SimpleCore"""
+class TestSimpleISA:
+    """Tests for SimpleISA"""
 
     def test_execute_mov(self):
         mem = Memory(size=64 * 1024)
-        core = SimpleCore(memory=mem)
+        core = SimpleISA(memory=mem)
 
         core.load_assembly("MOV R0, #123", base_addr=0x1000)
         core.state.pc = 0x1000
@@ -99,7 +99,7 @@ class TestSimpleCore:
 
     def test_execute_add(self):
         mem = Memory(size=64 * 1024)
-        core = SimpleCore(memory=mem)
+        core = SimpleISA(memory=mem)
 
         core.load_assembly("""
             MOV R1, #10
@@ -123,7 +123,7 @@ class TestSimpleCore:
         mem.write_word(block_addr + 0x04, 0x3000)       # exception_vector
         mem.write_word(block_addr + 0x10, 0)            # memtable_address
 
-        core = SimpleCore(memory=mem)
+        core = SimpleISA(memory=mem)
 
         # 主程序
         core.load_assembly("""
@@ -155,7 +155,7 @@ class TestSimpleCore:
 
     def test_sysop(self):
         mem = Memory(size=64 * 1024)
-        core = SimpleCore(memory=mem)
+        core = SimpleISA(memory=mem)
 
         sysop_result = [None]
 
@@ -176,13 +176,13 @@ class TestSimpleCore:
 
 
 class TestMemoryTranslation:
-    """Tests for memory translation in SimpleCore"""
+    """Tests for memory translation in SimpleISA"""
 
     def test_ldr_without_translation(self):
         """Test LDR without page table (VA = PA)"""
         mem = Memory(size=64 * 1024)
         mm = MemoryManager(physical_memory=mem)
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
 
         # 写入测试数据
         mem.write_word(0x1000, 0x12345678)
@@ -201,7 +201,7 @@ class TestMemoryTranslation:
         """Test LDR with page table translation"""
         mem = Memory(size=64 * 1024)
         mm = MemoryManager(physical_memory=mem)
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
 
         # 创建页表：VA 0x1000 -> PA 0x2000
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
@@ -228,7 +228,7 @@ class TestMemoryTranslation:
         """Test STR with page table translation"""
         mem = Memory(size=64 * 1024)
         mm = MemoryManager(physical_memory=mem)
-        core = SimpleCore(memory=mem, memory_manager=mm)
+        core = SimpleISA(memory=mem, memory_manager=mm)
 
         # 创建页表：VA 0x1000 -> PA 0x2000
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
@@ -257,7 +257,7 @@ class TestIntegration:
 
     def test_memory_and_core(self):
         mem = Memory(size=1024 * 1024)
-        core = SimpleCore(memory=mem)
+        core = SimpleISA(memory=mem)
 
         code = """
             MOV R0, #1

@@ -1,14 +1,14 @@
 """
 RPA Machine - 集成 RPACore、内存和核心
 
-Machine 类将 RPACore、Memory、MemoryManager 和 SimpleCore 组合在一起，
+Machine 类将 RPACore、Memory、MemoryManager 和 SimpleISA 组合在一起，
 提供完整的 RPA 执行环境。
 """
 
 from typing import Any, Dict, Optional, Callable, List
 from .core import RPACore, Domain, DomainBlock
 from .memory import Memory, MemoryManager, PageTable, TranslationError, BusError
-from .emulator import SimpleCore
+from .isa_simple import SimpleISA
 from .stdio import StdioDevice, StdioDeviceManager
 
 
@@ -23,7 +23,7 @@ class Machine:
     - RPACore: Domain 管理
     - Memory: 物理内存
     - MemoryManager: 页表管理和地址翻译
-    - SimpleCore: 指令执行
+    - SimpleISA: 指令执行
     """
 
     def __init__(self, memory_size: int = 1024 * 1024,
@@ -40,8 +40,8 @@ class Machine:
         self.stdio_manager.register(self.stdio)
 
         # Domain 核心
-        self.cores: Dict[int, SimpleCore] = {}
-        self.root_core = SimpleCore(memory=self.memory, memory_manager=self.mm)
+        self.cores: Dict[int, SimpleISA] = {}
+        self.root_core = SimpleISA(memory=self.memory, memory_manager=self.mm)
         self.cores[0] = self.root_core
 
         # Domain 页表: domain_id -> memtable_addr
@@ -58,7 +58,7 @@ class Machine:
 
         core = self.cores.get(domain_id)
         if core is None:
-            core = SimpleCore(memory=self.memory, memory_manager=self.mm)
+            core = SimpleISA(memory=self.memory, memory_manager=self.mm)
             self.cores[domain_id] = core
 
         end_addr = core.load_assembly(code, base_addr=base_addr)
@@ -181,7 +181,7 @@ class Machine:
         # 创建或获取核心
         core = self.cores.get(domain_id)
         if core is None:
-            core = SimpleCore(memory=self.memory, memory_manager=self.mm)
+            core = SimpleISA(memory=self.memory, memory_manager=self.mm)
             self.cores[domain_id] = core
 
         # 设置 memtable_chain
@@ -274,7 +274,7 @@ class Machine:
 
         core = self.cores.get(domain_id)
         if core is None:
-            core = SimpleCore(memory=self.memory, memory_manager=self.mm)
+            core = SimpleISA(memory=self.memory, memory_manager=self.mm)
             self.cores[domain_id] = core
 
         core.state.set_reg(reg, value)
@@ -306,6 +306,6 @@ class Machine:
         self.rpa = RPACore()
         self.memory = Memory(size=self.memory.size)
         self.mm = MemoryManager(physical_memory=self.memory)
-        self.cores = {0: SimpleCore(memory=self.memory, memory_manager=self.mm)}
+        self.cores = {0: SimpleISA(memory=self.memory, memory_manager=self.mm)}
         self.domain_memtables = {0: 0}
         self.code_segments.clear()
