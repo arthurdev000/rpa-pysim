@@ -742,9 +742,11 @@ class SimpleCore:
         self.memory.write_word(block_addr + 0x40, self.state.lr)
         self.memory.write_word(block_addr + 0x44, self.state.sp)
 
+        # 保存 R0-R12 (0x48-0x78)
         for i in range(13):
             self.memory.write_word(block_addr + 0x48 + i * 4, self.state.get_reg(i))
 
+        # 保存标志位到 0x7C (N/Z/C/V)
         flags = 0
         if self.state.n:
             flags |= 1 << 31
@@ -754,7 +756,7 @@ class SimpleCore:
             flags |= 1 << 29
         if self.state.v:
             flags |= 1 << 28
-        self.memory.write_word(block_addr + 0x78, flags)
+        self.memory.write_word(block_addr + 0x7C, flags)
 
     def _restore_context(self, block_addr: int) -> None:
         """从控制块恢复上下文"""
@@ -765,10 +767,12 @@ class SimpleCore:
         self.state.lr = self.memory.read_word(block_addr + 0x40)
         self.state.sp = self.memory.read_word(block_addr + 0x44)
 
+        # 恢复 R0-R12 (0x48-0x78)
         for i in range(13):
             self.state.set_reg(i, self.memory.read_word(block_addr + 0x48 + i * 4))
 
-        flags = self.memory.read_word(block_addr + 0x78)
+        # 恢复标志位从 0x7C (N/Z/C/V)
+        flags = self.memory.read_word(block_addr + 0x7C)
         self.state.n = bool(flags & (1 << 31))
         self.state.z = bool(flags & (1 << 30))
         self.state.c = bool(flags & (1 << 29))
