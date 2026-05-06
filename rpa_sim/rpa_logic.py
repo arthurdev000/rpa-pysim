@@ -39,18 +39,18 @@ DomainBlock (控制块):
 
     ┌────────────────────────────────────────────────────────────────┐
     │                    DomainBlock 内存布局                        │
-    │                     (32 字节, 32字节对齐)                      │
+    │                     (28 字节, 32字节对齐)                      │
     ├────────────┬───────────────────────────────────────────────────┤
     │ 偏移       │ 字段                                              │
     ├────────────┼───────────────────────────────────────────────────┤
     │ 0x00       │ ctrlblock_size      控制块大小 (含自身)           │
-    │ 0x04       │ execution_address   执行地址                      │
-    │ 0x08       │ exception_vector    异常向量                      │
-    │ 0x0C       │ interrupt_vector    中断向量                      │
-    │ 0x10       │ interrupt_ctrl      中断控制器                    │
-    │ 0x14       │ memtable_address    内存区域表地址                │
-    │ 0x18       │ domain_id           域ID (系统分配，调试用)       │
-    │ 0x1C       │ parent_block        父域控制块地址 (可选)         │
+    │ 0x04       │ exception_vector    异常向量                      │
+    │ 0x08       │ interrupt_vector    中断向量                      │
+    │ 0x0C       │ interrupt_ctrl      中断控制器                    │
+    │ 0x10       │ memtable_address    内存区域表地址                │
+    │ 0x14       │ domain_id           域ID (系统分配，调试用)       │
+    │ 0x18       │ parent_block        父域控制块地址 (可选)         │
+    │ 0x1C       │ child_block         子域控制块地址 (父域维护)     │
     └────────────┴───────────────────────────────────────────────────┘
 
     ctrlblock_size 说明:
@@ -59,10 +59,23 @@ DomainBlock (控制块):
     - 当前实现固定为 32 bytes
     - 必须是 32 的倍数
 
+    child_block 说明:
+    - 由父域维护，记录子域控制块地址
+    - 用于 RETURN 指令返回子域
+
+ISA 扩展区域 (偏移 0x20 起):
+    │ 0x20       │ saved_sp            ISA 保存的栈指针            │
+    │ 0x24       │ saved_lr            ISA 保存的返回地址          │
+    │ 0x28       │ saved_psr           ISA 保存的程序状态寄存器    │
+
 DESCEND 流程:
 =============
 
     父域执行 DESCEND R0 (R0 = 控制块地址):
+
+    准备工作（父域负责）：
+    1. 父域在控制块中设置必要字段
+    2. 对于首次 DESCEND，父域必须将入口地址写入 saved_lr (0x24)
 
     ┌─────────────────────────────────────────────────────────────────┐
     │ RPALogic pseudo-RTL          │ Decoder (SimpleISA)             │
@@ -71,23 +84,29 @@ DESCEND 流程:
     │ 1. 读取控制块:               │                                 │
     │    size = [R0 + 0x00]        │                                 │
     │    验证 size 对齐和范围      │                                 │
-    │    entry = [R0 + 0x04]       │                                 │
-    │    exception = [R0 + 0x08]   │                                 │
-    │    memtable = [R0 + 0x14]    │                                 │
+    │    exception = [R0 + 0x04]   │                                 │
+    │    memtable = [R0 + 0x10]    │                                 │
     │                              │                                 │
     │ 2. 分配 domain_id:           │                                 │
     │    domain_id = next_id++     │                                 │
-    │    [R0 + 0x18] = domain_id   │                                 │
+    │    [R0 + 0x14] = domain_id   │                                 │
     │                              │                                 │
-    │ 3. 切换到子域:               │                                 │
+    │ 3. 设置 parent_block:        │                                 │
+    │    [R0 + 0x18] = parent_addr │                                 │
+    │                              │                                 │
+    │ 4. 切换到子域:               │                                 │
     │    current_domain = child    │                                 │
-    │    PC = entry ────────────────▶ Decoder 开始执行               │
+    │    PC = saved_lr ─────────────▶ Decoder 开始执行               │
     │                              │                                 │
-    │                              │ 4. Decoder 执行代码             │
+    │                              │ 5. Decoder 执行代码             │
     │                              │    ...                          │
     │                              │    ESCALATE R0                  │
     │                              │                                 │
     └──────────────────────────────┴──────────────────────────────────┘
+
+    注意：首次和后续 DESCEND 统一使用 saved_lr 作为入口点
+    - 首次：父域在 DESCEND 前写入入口地址到 saved_lr
+    - 后续：ESCALATE 已保存返回地址到 saved_lr
 
 ESCALATE 流程:
 ==============
@@ -99,7 +118,9 @@ ESCALATE 流程:
     ├──────────────────────────────┼──────────────────────────────────┤
     │                              │                                 │
     │                              │ 1. Decoder 保存上下文           │
-    │                              │    (寄存器状态由 Decoder 管理)  │
+    │                              │    [block+0x20] = SP            │
+    │                              │    [block+0x24] = PC+4 (返回)   │
+    │                              │    [block+0x28] = PSR           │
     │                              │                                 │
     │ 2. 切换到父域:               │                                 │
     │    current_domain = parent   │                                 │
@@ -144,27 +165,15 @@ CTRLBLOCK_SIZE = 32  # 当前固定大小
 CTRLBLOCK_ALIGN = 32  # 对齐要求
 CTRLBLOCK_MIN_SIZE = 28  # 最小有效大小
 
-
-@dataclass
-class MemtableEntry:
-    """
-    内存区域表条目
-
-    描述一个可用的内存区域：
-    ┌────────────────────────────────────────┐
-    │ base   : 区域起始地址                 │
-    │ size   : 区域大小                     │
-    │ attr   : 属性 (READ|WRITE|EXEC|...)   │
-    └────────────────────────────────────────┘
-    """
-    base: int
-    size: int
-    attr: int = 0
-
-    READ = 1 << 0
-    WRITE = 1 << 1
-    EXEC = 1 << 2
-    DEVICE = 1 << 3
+# DomainBlock 字段偏移
+OFFSET_CTRLBLOCK_SIZE = 0x00
+OFFSET_EXCEPTION_VECTOR = 0x04
+OFFSET_INTERRUPT_VECTOR = 0x08
+OFFSET_INTERRUPT_CTRL = 0x0C
+OFFSET_MEMTABLE_ADDRESS = 0x10
+OFFSET_DOMAIN_ID = 0x14
+OFFSET_PARENT_BLOCK = 0x18
+OFFSET_CHILD_BLOCK = 0x1C
 
 
 @dataclass
@@ -174,20 +183,20 @@ class DomainBlock:
 
     父域在内存中分配此结构，然后执行 DESCEND 使配置生效。
 
-    大小: 32 字节
+    大小: 28 字节 (基本) + 4 字节填充 = 32 字节
     对齐: 32 字节边界
 
     见文件头部 ASCII 图解
     """
     # 配置字段 (父域在 DESCEND 前写入)
     ctrlblock_size: int = CTRLBLOCK_SIZE   # 0x00: 控制块大小
-    execution_address: int = 0              # 0x04: 执行地址
-    exception_vector: int = 0               # 0x08: 异常向量
-    interrupt_vector: int = 0               # 0x0C: 中断向量
-    interrupt_ctrl: int = 0                 # 0x10: 中断控制器
-    memtable_address: int = 0               # 0x14: 内存区域表地址
-    domain_id: int = 0                      # 0x18: 域ID (系统分配)
-    parent_block: int = 0                   # 0x1C: 父域控制块地址 (可选)
+    exception_vector: int = 0               # 0x04: 异常向量
+    interrupt_vector: int = 0               # 0x08: 中断向量
+    interrupt_ctrl: int = 0                 # 0x0C: 中断控制器
+    memtable_address: int = 0               # 0x10: 内存区域表地址
+    domain_id: int = 0                      # 0x14: 域ID (系统分配)
+    parent_block: int = 0                   # 0x18: 父域控制块地址 (可选)
+    child_block: int = 0                    # 0x1C: 子域控制块地址 (父域维护)
 
     # 向后兼容字段
     params: Dict[str, Any] = field(default_factory=dict)
@@ -243,7 +252,6 @@ class RPALogic:
         # 根域 (domain_id = 0)
         root_block = DomainBlock(
             ctrlblock_size=CTRLBLOCK_SIZE,
-            execution_address=0x8000,
             exception_vector=0x8004,
             domain_id=0,
         )
@@ -260,6 +268,10 @@ class RPALogic:
 
         # 异常处理器 (根域)
         self.exception_handlers: Dict[str, Callable] = {}
+
+        # 域注册表：block_addr -> Domain（debug 用，显示域数量）
+        # 注意：首次/后续 DESCEND 判断通过 child_block 字段，不依赖注册表
+        self._domain_registry: Dict[int, Domain] = {0: self.root_domain}
 
         # 统计
         self.stats = {
@@ -297,23 +309,69 @@ class RPALogic:
         """
         进入子域
 
+        通过检查父域的 child_block 判断是否首次 DESCEND：
+        - child_block == block_addr: 已有子域，RETURN 语义
+        - child_block != block_addr: 首次 DESCEND，创建新域
+
         RPALogic pseudo-RTL 层负责:
         1. 验证 ctrlblock_size
-        2. 从内存读取 DomainBlock
-        3. 分配 domain_id
-        4. 创建新域对象（用于错误归属）
+        2. 检查 child_block 判断是否首次
+        3. 首次：从内存读取 DomainBlock，创建新域对象
+        4. 后续：复用已存在的域对象
         5. 切换到子域
         6. 返回入口信息
 
         寄存器保存由 ISA 负责（prepare_descend）
 
+        注意：入口地址统一使用 saved_lr (0x24)
+        - 首次 DESCEND：父域在 DESCEND 前写入入口地址到 saved_lr
+        - 后续 DESCEND：ESCALATE 已保存返回地址到 saved_lr
+
         Args:
             block_addr: DomainBlock 在内存中的地址
-            domain_id: 可选的域 ID（由软件指定，用于错误归属）
+            domain_id: 可选的域 ID（仅首次有效，用于错误归属）
+
+        Returns:
+            dict: 包含 memtable, domain_id, is_first 字段
         """
         # 验证控制块
         self._validate_ctrlblock(block_addr)
 
+        # 通过父域的 child_block 判断是否首次 DESCEND
+        # child_block 指向 block_addr 表示这是 RETURN 场景
+        current_child_block = self.current_domain.block.child_block
+        if current_child_block == block_addr:
+            # RETURN 语义：子域已存在
+            existing_domain = self._domain_registry.get(block_addr)
+            if existing_domain is None:
+                # 注册表中没有，但从 child_block 判断是 RETURN
+                # 这种情况可能是从其他上下文恢复，需要重建 Domain 对象
+                block = self._read_domain_block(block_addr)
+                existing_domain = Domain(
+                    domain_id=block.domain_id,
+                    block=block,
+                    parent=self.current_domain,
+                    block_addr=block_addr,
+                )
+                self._domain_registry[block_addr] = existing_domain
+
+            self.current_domain = existing_domain
+            self.stats["descend_count"] += 1
+            return {
+                "memtable": existing_domain.block.memtable_address,
+                "domain_id": existing_domain.domain_id,
+                "is_first": False,  # 标记为非首次
+            }
+
+        # 检查父域是否已有其他子域（child_block 非零且不匹配）
+        if current_child_block != 0 and current_child_block != block_addr:
+            raise DomainBlockError(
+                f"Parent domain already has child at 0x{current_child_block:x}, "
+                f"cannot create new child at 0x{block_addr:x}. "
+                f"Previous child domain may not have been properly released."
+            )
+
+        # 首次 DESCEND：创建新域
         block = self._read_domain_block(block_addr)
 
         # 分配 domain_id
@@ -324,7 +382,17 @@ class RPALogic:
         # 写入 domain_id 到控制块
         block.domain_id = domain_id
         if self.memory:
-            self.memory.write_word(block_addr + 0x18, domain_id)
+            self.memory.write_word(block_addr + OFFSET_DOMAIN_ID, domain_id)
+
+        # 写入 parent_block 到控制块
+        block.parent_block = self.current_domain.block_addr
+        if self.memory:
+            self.memory.write_word(block_addr + OFFSET_PARENT_BLOCK, self.current_domain.block_addr)
+
+        # 更新父域的 child_block（标记已创建子域）
+        if self.memory:
+            self.memory.write_word(self.current_domain.block_addr + OFFSET_CHILD_BLOCK, block_addr)
+        self.current_domain.block.child_block = block_addr
 
         # 创建新域对象（用于错误归属）
         new_domain = Domain(
@@ -337,12 +405,15 @@ class RPALogic:
         # 切换
         self.current_domain = new_domain
 
+        # 注册到域注册表（debug 用）
+        self._domain_registry[block_addr] = new_domain
+
         self.stats["descend_count"] += 1
 
         return {
-            "execution_address": block.execution_address,
             "memtable": block.memtable_address,
             "domain_id": domain_id,
+            "is_first": True,  # 标记为首次
         }
 
     def escalate(self, service_type: int) -> Any:
@@ -362,12 +433,65 @@ class RPALogic:
 
         self.stats["escalate_count"] += 1
 
+        # 保存当前（子域）的 block_addr，供父域 RETURN 时使用
+        child_block_addr = self.current_domain.block_addr
+
         # 切换到父域
         self.current_domain = parent
 
         return {
             "vector": parent.block.exception_vector,
             "domain_id": parent.domain_id,
+            "child_block_addr": child_block_addr,  # 返回子域的 block 地址
+        }
+
+    def exit_domain(self, service_type: int) -> Any:
+        """
+        退出子域并释放资源
+
+        与 ESCALATE 类似，但会清空父子关系：
+        1. 清空父域的 child_block
+        2. 清空子域的 parent_block
+        3. 从注册表中移除子域
+        4. 切换到父域
+
+        此后子域控制块可被重新使用（重新 DESCEND）。
+        """
+        if self.current_domain.parent is None:
+            raise RuntimeError("Cannot exit from root domain")
+
+        parent = self.current_domain.parent
+        child_block_addr = self.current_domain.block_addr
+
+        self.stats["escalate_count"] += 1
+
+        # 清空父域的 child_block
+        if self.memory:
+            self.memory.write_word(parent.block_addr + OFFSET_CHILD_BLOCK, 0)
+        parent.block.child_block = 0
+
+        # 清空子域的 parent_block
+        if self.memory:
+            self.memory.write_word(child_block_addr + OFFSET_PARENT_BLOCK, 0)
+        self.current_domain.block.parent_block = 0
+
+        # 清空子域的 domain_id（可选，便于调试）
+        if self.memory:
+            self.memory.write_word(child_block_addr + OFFSET_DOMAIN_ID, 0)
+        self.current_domain.block.domain_id = 0
+
+        # 从注册表移除子域
+        if child_block_addr in self._domain_registry:
+            del self._domain_registry[child_block_addr]
+
+        # 切换到父域
+        self.current_domain = parent
+
+        return {
+            "vector": parent.block.exception_vector,
+            "domain_id": parent.domain_id,
+            "child_block_addr": 0,  # 子域已释放，不再有有效地址
+            "released": True,  # 标记已释放
         }
 
     def fault(self, fault_type: str, address: int = 0) -> None:
@@ -402,28 +526,28 @@ class RPALogic:
         """从内存读取 DomainBlock"""
         if self.memory:
             return DomainBlock(
-                ctrlblock_size=self.memory.read_word(addr + 0x00),
-                execution_address=self.memory.read_word(addr + 0x04),
-                exception_vector=self.memory.read_word(addr + 0x08),
-                interrupt_vector=self.memory.read_word(addr + 0x0C),
-                interrupt_ctrl=self.memory.read_word(addr + 0x10),
-                memtable_address=self.memory.read_word(addr + 0x14),
-                domain_id=self.memory.read_word(addr + 0x18),
-                parent_block=self.memory.read_word(addr + 0x1C),
+                ctrlblock_size=self.memory.read_word(addr + OFFSET_CTRLBLOCK_SIZE),
+                exception_vector=self.memory.read_word(addr + OFFSET_EXCEPTION_VECTOR),
+                interrupt_vector=self.memory.read_word(addr + OFFSET_INTERRUPT_VECTOR),
+                interrupt_ctrl=self.memory.read_word(addr + OFFSET_INTERRUPT_CTRL),
+                memtable_address=self.memory.read_word(addr + OFFSET_MEMTABLE_ADDRESS),
+                domain_id=self.memory.read_word(addr + OFFSET_DOMAIN_ID),
+                parent_block=self.memory.read_word(addr + OFFSET_PARENT_BLOCK),
+                child_block=self.memory.read_word(addr + OFFSET_CHILD_BLOCK),
             )
         return DomainBlock()
 
     def _write_domain_block(self, addr: int, block: DomainBlock) -> None:
         """写入 DomainBlock 到内存"""
         if self.memory:
-            self.memory.write_word(addr + 0x00, block.ctrlblock_size)
-            self.memory.write_word(addr + 0x04, block.execution_address)
-            self.memory.write_word(addr + 0x08, block.exception_vector)
-            self.memory.write_word(addr + 0x0C, block.interrupt_vector)
-            self.memory.write_word(addr + 0x10, block.interrupt_ctrl)
-            self.memory.write_word(addr + 0x14, block.memtable_address)
-            self.memory.write_word(addr + 0x18, block.domain_id)
-            self.memory.write_word(addr + 0x1C, block.parent_block)
+            self.memory.write_word(addr + OFFSET_CTRLBLOCK_SIZE, block.ctrlblock_size)
+            self.memory.write_word(addr + OFFSET_EXCEPTION_VECTOR, block.exception_vector)
+            self.memory.write_word(addr + OFFSET_INTERRUPT_VECTOR, block.interrupt_vector)
+            self.memory.write_word(addr + OFFSET_INTERRUPT_CTRL, block.interrupt_ctrl)
+            self.memory.write_word(addr + OFFSET_MEMTABLE_ADDRESS, block.memtable_address)
+            self.memory.write_word(addr + OFFSET_DOMAIN_ID, block.domain_id)
+            self.memory.write_word(addr + OFFSET_PARENT_BLOCK, block.parent_block)
+            self.memory.write_word(addr + OFFSET_CHILD_BLOCK, block.child_block)
 
     def _get_pc(self) -> int:
         """获取当前 PC"""

@@ -3,7 +3,7 @@ RPA Core Tests - Basic functionality tests
 """
 
 import pytest
-from rpa_sim import RPALogic, Domain, DomainBlock, Memory, SimpleISA, MemoryManager
+from rpa_sim import RPALogic, Domain, DomainBlock, Memory, SimpleISA, MemoryManager, DomainBlockError
 
 
 class TestDomainBlock:
@@ -11,11 +11,9 @@ class TestDomainBlock:
 
     def test_create_block(self):
         block = DomainBlock(
-            execution_address=0x1000,
             exception_vector=0x2000,
             memtable_address=0x10000,
         )
-        assert block.execution_address == 0x1000
         assert block.exception_vector == 0x2000
         assert block.memtable_address == 0x10000
 
@@ -24,16 +22,16 @@ class TestDomain:
     """Tests for Domain"""
 
     def test_create_domain(self):
-        block = DomainBlock(execution_address=0x8000)
+        block = DomainBlock()
         domain = Domain(domain_id=0, block=block)
         assert domain.domain_id == 0
         assert domain.parent is None
 
     def test_domain_with_parent(self):
-        parent_block = DomainBlock(execution_address=0x8000)
+        parent_block = DomainBlock()
         parent = Domain(domain_id=0, block=parent_block)
 
-        child_block = DomainBlock(execution_address=0x1000)
+        child_block = DomainBlock()
         child = Domain(domain_id=1, block=child_block, parent=parent)
 
         assert child.parent == parent
@@ -65,6 +63,39 @@ class TestRPALogic:
         stats = rpa.get_stats()
         assert stats["descend_count"] == 0
         assert stats["escalate_count"] == 0
+
+    def test_descend_conflict_child_block(self):
+        """
+        父域已有子域时，尝试 DESCEND 到不同的子域应报错
+        """
+        mem = Memory(size=64 * 1024)
+        rpa = RPALogic()
+        rpa.memory = mem
+
+        # 第一个子域控制块
+        child1_addr = 0x1000
+        mem.write_word(child1_addr + 0x00, 32)  # ctrlblock_size
+        mem.write_word(child1_addr + 0x10, 0)   # memtable_address
+        mem.write_word(child1_addr + 0x24, 0x2000)  # saved_lr
+
+        # 第二个子域控制块
+        child2_addr = 0x2000
+        mem.write_word(child2_addr + 0x00, 32)  # ctrlblock_size
+        mem.write_word(child2_addr + 0x10, 0)   # memtable_address
+        mem.write_word(child2_addr + 0x24, 0x3000)  # saved_lr
+
+        # 首次 DESCEND 到 child1
+        rpa.descend(child1_addr)
+        assert rpa.current_domain.block_addr == child1_addr
+
+        # ESCALATE 回到根域
+        rpa.escalate(0)
+        assert rpa.current_domain == rpa.root_domain
+
+        # 尝试 DESCEND 到 child2（应该报错，因为 child1 还存在）
+        from rpa_sim import DomainBlockError
+        with pytest.raises(DomainBlockError, match="already has child"):
+            rpa.descend(child2_addr)
 
 
 class TestSimpleISA:
@@ -103,19 +134,23 @@ class TestSimpleISA:
 
         # 设置控制块 - 新布局
         # 0x00: ctrlblock_size
-        # 0x04: execution_address
-        # 0x08: exception_vector
-        # 0x0C: interrupt_vector
-        # 0x10: interrupt_ctrl
-        # 0x14: memtable_address
-        # 0x18: domain_id
-        # 0x1C: parent_block
+        # 0x04: exception_vector
+        # 0x08: interrupt_vector
+        # 0x0C: interrupt_ctrl
+        # 0x10: memtable_address
+        # 0x14: domain_id
+        # 0x18: parent_block
+        # 0x1C: child_block
+        # ISA 扩展:
+        # 0x20: saved_sp
+        # 0x24: saved_lr (首次 DESCEND 入口地址由父域写入)
+        # 0x28: saved_psr
         block_addr = 0x0800
         child_entry = 0x2000
-        mem.write_word(block_addr + 0x00, 32)         # ctrlblock_size = 32
-        mem.write_word(block_addr + 0x04, child_entry) # execution_address
-        mem.write_word(block_addr + 0x08, 0)           # exception_vector (子域自己用的)
-        mem.write_word(block_addr + 0x14, 0)           # memtable_address
+        mem.write_word(block_addr + 0x00, 32)               # ctrlblock_size = 32
+        mem.write_word(block_addr + 0x04, 0)                # exception_vector (子域自己用的)
+        mem.write_word(block_addr + 0x10, 0)                # memtable_address
+        mem.write_word(block_addr + 0x24, child_entry)      # saved_lr = 入口地址 (父域设置)
 
         rpa = RPALogic()
         rpa.memory = mem
@@ -287,7 +322,6 @@ class TestIntegration:
         rpa.memory = mem
 
         block = DomainBlock(
-            execution_address=0x4000,
             exception_vector=0x4004,
             memtable_address=0x50000,
         )
@@ -295,6 +329,280 @@ class TestIntegration:
         rpa._write_domain_block(0x1000, block)
         read_block = rpa._read_domain_block(0x1000)
 
-        assert read_block.execution_address == 0x4000
         assert read_block.exception_vector == 0x4004
         assert read_block.memtable_address == 0x50000
+
+    def test_descend_escalate_return_cycle(self):
+        """Test complete DESCEND -> ESCALATE -> RETURN cycle"""
+        mem = Memory(size=64 * 1024)
+        rpa = RPALogic()
+        rpa.memory = mem
+
+        # 设置子域控制块
+        block_addr = 0x0800
+        child_entry = 0x2000
+        parent_exception_handler = 0x3000
+        child_return_point = 0x2008  # After ESCALATE instruction
+
+        mem.write_word(block_addr + 0x00, 32)                    # ctrlblock_size
+        mem.write_word(block_addr + 0x04, 0)                     # exception_vector (子域自己的)
+        mem.write_word(block_addr + 0x10, 0)                     # memtable_address
+        mem.write_word(block_addr + 0x24, child_entry)           # saved_lr = 入口地址 (父域设置)
+
+        # 设置父域的 exception_vector
+        rpa.root_domain.block.exception_vector = parent_exception_handler
+
+        core = SimpleISA(rpa=rpa, memory=mem)
+
+        # 父域代码
+        core.load_assembly("""
+            MOV R0, #0x0800
+            DESCEND R0
+            ; 子域返回后继续
+            MOV R5, #100
+            HALT
+        """, base_addr=0x1000)
+
+        # 子域代码
+        core.load_assembly("""
+            MOV R1, #5
+            MOV R0, #1
+            ESCALATE R0
+            ; RETURN 后从这里继续
+            MOV R2, #42
+            HALT
+        """, base_addr=child_entry)
+
+        # 父域异常处理程序（处理子域 ESCALATE，然后 RETURN）
+        core.load_assembly("""
+            ; 父域收到 ESCALATE
+            MOV R3, #99
+            MOV R0, #0x0800
+            RETURN R0
+            ; RETURN 后不会到这里
+            HALT
+        """, base_addr=parent_exception_handler)
+
+        core.state.pc = 0x1000
+        core.run()
+
+        # 验证：
+        # R3 = 99: 父域处理程序执行了
+        # R1 = 5: 子域执行了 MOV R1, #5
+        # R2 = 42: RETURN 后子域继续执行了 MOV R2, #42
+        assert core.state.get_reg(3) == 99
+        assert core.state.get_reg(2) == 42
+
+        # 验证域切换正确
+        assert rpa.get_depth() == 1  # 回到子域
+
+
+class TestExitInstruction:
+    """Tests for EXIT instruction"""
+
+    def test_exit_releases_child_domain(self):
+        """
+        EXIT 指令释放子域，清空父子关系
+        """
+        mem = Memory(size=64 * 1024)
+        rpa = RPALogic()
+        rpa.memory = mem
+
+        # 子域控制块
+        block_addr = 0x0800
+        child_entry = 0x2000
+        mem.write_word(block_addr + 0x00, 32)               # ctrlblock_size
+        mem.write_word(block_addr + 0x04, 0)                # exception_vector
+        mem.write_word(block_addr + 0x10, 0)                # memtable_address
+        mem.write_word(block_addr + 0x24, child_entry)      # saved_lr
+
+        core = SimpleISA(rpa=rpa, memory=mem)
+        rpa.root_domain.block.exception_vector = 0x3000
+
+        # 父域代码
+        core.load_assembly("""
+            MOV R0, #0x0800
+            DESCEND R0
+            ; EXIT 后回到这里，子域已释放
+            MOV R5, #100
+            HALT
+        """, base_addr=0x1000)
+
+        # 子域代码 - 使用 EXIT 退出
+        core.load_assembly("""
+            MOV R1, #42
+            MOV R0, #0
+            EXIT R0
+            ; EXIT 后不会执行到这里
+            MOV R2, #999
+            HALT
+        """, base_addr=child_entry)
+
+        # 父域异常处理程序
+        core.load_assembly("""
+            HALT
+        """, base_addr=0x3000)
+
+        core.state.pc = 0x1000
+        core.run()
+
+        # 验证子域执行了
+        assert core.state.get_reg(1) == 42
+        # 验证父域回到了根域
+        assert rpa.get_depth() == 0
+        # 验证父域的 child_block 被清空
+        assert rpa.root_domain.block.child_block == 0
+        # 验证子域的 parent_block 被清空
+        assert mem.read_word(block_addr + 0x18) == 0  # parent_block
+        # 验证子域的 domain_id 被清空
+        assert mem.read_word(block_addr + 0x14) == 0  # domain_id
+
+    def test_exit_allows_reuse_of_child_block(self):
+        """
+        EXIT 后可以重新 DESCEND 到同一个控制块
+        """
+        mem = Memory(size=64 * 1024)
+        rpa = RPALogic()
+        rpa.memory = mem
+
+        # 子域控制块
+        block_addr = 0x0800
+        child_entry = 0x2000
+        mem.write_word(block_addr + 0x00, 32)               # ctrlblock_size
+        mem.write_word(block_addr + 0x04, 0)                # exception_vector
+        mem.write_word(block_addr + 0x10, 0)                # memtable_address
+
+        core = SimpleISA(rpa=rpa, memory=mem)
+        rpa.root_domain.block.exception_vector = 0x3000
+
+        # 父域代码
+        core.load_assembly("""
+            MOV R0, #0x0800
+            MOV R1, #0x2000
+            STR R1, [R0, #0x24]  ; saved_lr = 入口地址
+            DESCEND R0
+            HALT
+        """, base_addr=0x1000)
+
+        # 子域代码 - 使用 EXIT 退出
+        core.load_assembly("""
+            MOV R4, #99
+            MOV R0, #0
+            EXIT R0
+            HALT
+        """, base_addr=child_entry)
+
+        # 父域异常处理程序
+        core.load_assembly("HALT", base_addr=0x3000)
+
+        core.state.pc = 0x1000
+        core.run()
+
+        # 验证子域执行了
+        assert core.state.get_reg(4) == 99
+        # 验证回到根域
+        assert rpa.get_depth() == 0
+        # 验证父域的 child_block 被清空
+        assert rpa.root_domain.block.child_block == 0
+
+        # 现在可以重新 DESCEND 到同一个控制块
+        # 重置入口地址
+        mem.write_word(block_addr + 0x24, child_entry)
+
+        result = rpa.descend(block_addr)
+        assert result["is_first"] == True  # 应该是首次 DESCEND（因为之前 EXIT 释放了）
+        assert rpa.root_domain.block.child_block == block_addr
+
+    def test_exit_vs_escalate_difference(self):
+        """
+        EXIT 与 ESCALATE 的区别：
+        - ESCALATE 后父域可以 RETURN 回子域
+        - EXIT 后子域被释放，父域无法 RETURN
+        """
+        mem = Memory(size=64 * 1024)
+
+        # === ESCALATE 场景 ===
+        block_addr1 = 0x0800
+        child_entry1 = 0x2000
+        mem.write_word(block_addr1 + 0x00, 32)
+        mem.write_word(block_addr1 + 0x04, 0)
+        mem.write_word(block_addr1 + 0x10, 0)
+        mem.write_word(block_addr1 + 0x24, child_entry1)
+
+        rpa1 = RPALogic()
+        rpa1.memory = mem
+        core1 = SimpleISA(rpa=rpa1, memory=mem)
+        rpa1.root_domain.block.exception_vector = 0x3000
+
+        core1.load_assembly("""
+            MOV R0, #0x0800
+            DESCEND R0
+            ; ESCALATE+RETURN 后继续
+            MOV R1, #111
+            HALT
+        """, base_addr=0x1000)
+
+        core1.load_assembly("""
+            MOV R0, #1
+            ESCALATE R0
+            ; RETURN 后继续
+            MOV R2, #222
+            HALT
+        """, base_addr=child_entry1)
+
+        core1.load_assembly("""
+            ; 父域处理
+            MOV R0, #0x0800
+            RETURN R0
+            HALT
+        """, base_addr=0x3000)
+
+        core1.state.pc = 0x1000
+        core1.run()
+
+        # ESCALATE 后可以 RETURN
+        assert core1.state.get_reg(2) == 222  # 子域继续执行了
+        assert rpa1.get_depth() == 1  # 在子域
+
+        # === EXIT 场景 ===
+        mem2 = Memory(size=64 * 1024)
+
+        block_addr2 = 0x1000
+        child_entry2 = 0x3000
+        mem2.write_word(block_addr2 + 0x00, 32)
+        mem2.write_word(block_addr2 + 0x04, 0)
+        mem2.write_word(block_addr2 + 0x10, 0)
+        mem2.write_word(block_addr2 + 0x24, child_entry2)
+
+        rpa2 = RPALogic()
+        rpa2.memory = mem2
+        core2 = SimpleISA(rpa=rpa2, memory=mem2)
+        rpa2.root_domain.block.exception_vector = 0x4000
+
+        core2.load_assembly("""
+            MOV R0, #0x1000
+            DESCEND R0
+            ; EXIT 后回到这里
+            MOV R3, #333
+            HALT
+        """, base_addr=0x0000)
+
+        core2.load_assembly("""
+            MOV R4, #444
+            MOV R0, #0
+            EXIT R0
+            ; EXIT 后不会执行
+            MOV R5, #555
+            HALT
+        """, base_addr=child_entry2)
+
+        core2.load_assembly("HALT", base_addr=0x4000)
+
+        core2.state.pc = 0x0000
+        core2.run()
+
+        # EXIT 后子域被释放
+        assert core2.state.get_reg(4) == 444  # 子域执行了
+        assert core2.state.get_reg(5) == 0    # EXIT 后没执行
+        assert rpa2.get_depth() == 0  # 回到根域
+        assert rpa2.root_domain.block.child_block == 0  # 子域已释放

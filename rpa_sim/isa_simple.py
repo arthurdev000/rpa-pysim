@@ -13,6 +13,29 @@ SimpleISA 是一个简化版的类 ARM 指令集，用于演示 RPA 的核心机
 RPA 指令：DESCEND, ESCALATE, RETURN, SYSOP
 特殊：NOP, HALT
 
+调用标准 (Calling Convention):
+==============================
+
+寄存器约定:
+- r0-r3:  参数/返回值寄存器 (caller-saved)
+          - DESCEND 前: 父域在 r0 放控制块地址，r1-r3 可放额外参数
+          - ESCALATE 前: 子域在 r0 放 service_type，r1-r3 可放额外参数
+          - 返回时: r0-r3 包含返回值
+- r4-r12: callee-saved，由被调用者（编译器）负责保存/恢复
+- r13 (SP): 栈指针
+- r14 (LR): 链接寄存器
+- r15 (PC): 程序计数器
+
+上下文保存策略:
+- 最小方案: 只保存 SP 和 LR (8 字节)
+- 上下文保存在 DomainBlock 扩展区域 (ctrlblock_size > 32)
+- r0-r3 不保存，避免覆盖返回值
+
+DomainBlock 扩展区域 (ISA 上下文保存):
+- 0x20-0x23: saved_sp   (ISA 保存的栈指针)
+- 0x24-0x27: saved_lr   (ISA 保存的链接寄存器)
+- 0x28-0x3F: reserved   (保留)
+
 地址翻译:
 ============
 
@@ -32,6 +55,23 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Callable, Any, Tuple
 from enum import Enum, auto
 import re
+
+
+# DomainBlock 上下文保存区域偏移 (在基本 32 字节之后)
+# 这些偏移是相对于 DomainBlock 起始地址的
+SAVED_SP_OFFSET = 0x20    # ISA 保存的栈指针
+SAVED_LR_OFFSET = 0x24    # ISA 保存的链接寄存器（返回地址）
+SAVED_PSR_OFFSET = 0x28   # ISA 保存的程序状态寄存器 (N, Z, C, V)
+# 0x2C-0x3F 保留
+
+# 调用标准常量
+REG_ARG_START = 0         # r0 - 参数/返回值起始寄存器
+REG_ARG_END = 3           # r3 - 参数/返回值结束寄存器
+REG_SP = 13               # SP
+REG_LR = 14               # LR
+REG_PC = 15               # PC
+REG_CALLEE_SAVED_START = 4   # r4 - callee-saved 起始
+REG_CALLEE_SAVED_END = 12    # r12 - callee-saved 结束
 
 
 class OpCode(Enum):
@@ -59,6 +99,7 @@ class OpCode(Enum):
     DESCEND = auto()
     ESCALATE = auto()
     RETURN = auto()
+    EXIT = auto()  # ESCALATE + release child domain
 
     # 系统操作
     SYSOP = auto()
@@ -251,6 +292,7 @@ class Assembler:
             'DESCEND': OpCode.DESCEND,
             'ESCALATE': OpCode.ESCALATE,
             'RETURN': OpCode.RETURN,
+            'EXIT': OpCode.EXIT,
             'SYSOP': OpCode.SYSOP,
             'NOP': OpCode.NOP,
             'HALT': OpCode.HALT,
@@ -318,7 +360,7 @@ class Assembler:
             rm = self.parse_register(operands.strip())
             return Instruction(opcode=opcode, rm=rm)
 
-        elif opcode in (OpCode.DESCEND, OpCode.ESCALATE):
+        elif opcode in (OpCode.DESCEND, OpCode.ESCALATE, OpCode.RETURN, OpCode.EXIT):
             rd = self.parse_register(operands.strip())
             return Instruction(opcode=opcode, rd=rd)
 
@@ -370,7 +412,7 @@ class SimpleISA:
     - 翻译失败触发 TranslationError (包含 fault_owner)
 
     DESCEND/ESCALATE/RETURN 指令:
-    - DESCEND: 读取 DomainBlock，跳转到 execution_address
+    - DESCEND: 读取 DomainBlock，跳转到 saved_lr (0x24)
     - ESCALATE: 保存上下文，切换到父域
     - RETURN: 从控制块恢复上下文
     """
@@ -543,6 +585,9 @@ class SimpleISA:
         elif opcode == OpCode.ESCALATE:
             self._execute_escalate(inst)
 
+        elif opcode == OpCode.EXIT:
+            self._execute_exit(inst)
+
         elif opcode == OpCode.RETURN:
             self._execute_return(inst)
 
@@ -663,23 +708,29 @@ class SimpleISA:
 
         RTL 操作：
         1. 读取 DomainBlock 地址
-        2. 调用 ISA.prepare_descend() 保存上下文
-        3. 更新当前域状态
-        4. 跳转到 execution_address
+        2. 调用 RPALogic.descend() 切换域（首次创建或后续复用）
+        3. 调用 ISA.prepare_descend() 处理上下文
+        4. 跳转到 saved_lr (统一入口)
+           - 首次: 父域在 DESCEND 前写入入口地址到 saved_lr
+           - 后续: ESCALATE 已保存返回地址到 saved_lr
+        5. 更新 memtable_chain
+
+        注意：首次和后续 DESCEND 统一使用 saved_lr 作为入口点
         """
         block_addr = self.state.get_reg(inst.rd)
 
-        # RTL 调用 ISA 接口
+        # 通过 RPALogic 切换域（首次创建或后续复用）
+        result = self.rpa.descend(block_addr)
+        memtable = result.get("memtable", 0)
+
+        # RTL 调用 ISA 接口（清空寄存器、恢复上下文）
         self.prepare_descend(block_addr)
 
-        # 通过 RPALogic 切换域
-        result = self.rpa.descend(block_addr)
-        execution_addr = result.get("execution_address", 0)
-        memtable = result.get("memtable", 0)
-        if execution_addr:
-            self.state.pc = execution_addr
-        else:
-            self.halted = True
+        # 统一从 saved_lr 获取入口地址
+        # 首次 DESCEND: 父域在执行 DESCEND 前写入入口到 saved_lr
+        # 后续 DESCEND: ESCALATE 已保存返回地址到 saved_lr
+        self.state.pc = self.state.lr
+
         # 更新 memtable_chain
         if memtable != 0:
             self.memtable_chain = [memtable] + self.memtable_chain
@@ -712,47 +763,113 @@ class SimpleISA:
         if self.memtable_chain:
             self.memtable_chain = self.memtable_chain[1:]
 
+    def _execute_exit(self, inst: Instruction) -> None:
+        """
+        执行 EXIT 指令
+
+        EXIT = ESCALATE + 释放子域
+
+        RTL 操作：
+        1. 读取 service_type
+        2. 调用 ISA.complete_escalate() 保存上下文（可选，因为不会再返回）
+        3. 调用 RPALogic.exit_domain() 切换到父域并清空父子关系
+        4. 跳转到 exception_vector
+
+        与 ESCALATE 的区别：
+        - ESCALATE: 子域暂停，父域处理后可 RETURN 回来
+        - EXIT: 子域终止，父域无法 RETURN，子域控制块可被重新使用
+        """
+        service_type = self.state.get_reg(inst.rd)
+        block_addr = self.domain_block_addr
+
+        # RTL 调用 ISA 接口（可选保存，因为不会再返回）
+        # 仍然保存以便调试/故障排查
+        self.complete_escalate(block_addr, service_type)
+
+        # 通过 RPALogic 切换域并释放子域
+        result = self.rpa.exit_domain(service_type)
+        vector = result.get("vector", 0)
+        if vector:
+            self.state.pc = vector
+        else:
+            self.halted = True
+        # 更新 memtable_chain（移除当前域的页表）
+        if self.memtable_chain:
+            self.memtable_chain = self.memtable_chain[1:]
+        # 更新 domain_block_addr 为父域
+        self.domain_block_addr = self.rpa.current_domain.block_addr
+
     def _execute_return(self, inst: Instruction) -> None:
         """
         执行 RETURN 指令
 
-        这是软件可用的原语，具体语义由软件定义。
-        SimpleISA 默认不实现 RETURN，软件需自行管理返回逻辑。
+        RETURN 是 DESCEND 的别名，用于从父域返回子域。
+        逻辑与后续 DESCEND 完全相同：恢复子域上下文并继续执行。
         """
-        # RETURN 的语义由 ISA 实现定义
-        # SimpleISA 默认不做任何操作
-        pass
+        self._execute_descend(inst)
+
+    def _save_context(self, block_addr: int) -> None:
+        """保存当前域上下文到 DomainBlock"""
+        if self.memory:
+            self.memory.write_word(block_addr + SAVED_SP_OFFSET, self.state.sp)
+            self.memory.write_word(block_addr + SAVED_LR_OFFSET, self.state.pc + 4)  # 返回地址
+            # 保存 PSR (N, Z, C, V 标志位打包为一个字)
+            psr = (self.state.n << 3) | (self.state.z << 2) | (self.state.c << 1) | self.state.v
+            self.memory.write_word(block_addr + SAVED_PSR_OFFSET, psr)
+
+    def _restore_context(self, block_addr: int) -> None:
+        """从 DomainBlock 恢复域上下文（不含 PC）"""
+        if self.memory:
+            self.state.sp = self.memory.read_word(block_addr + SAVED_SP_OFFSET)
+            self.state.lr = self.memory.read_word(block_addr + SAVED_LR_OFFSET)
+            psr = self.memory.read_word(block_addr + SAVED_PSR_OFFSET)
+            self.state.n = bool(psr & 0x08)
+            self.state.z = bool(psr & 0x04)
+            self.state.c = bool(psr & 0x02)
+            self.state.v = bool(psr & 0x01)
 
     def prepare_descend(self, block_addr: int) -> None:
         """
         RPALogic pseudo-RTL 在 DESCEND 前自动调用
 
-        ISA 可在此：
-        - 保存当前上下文（软件自行决定存储位置）
-        - 修改 DomainBlock 参数（如切换线程）
+        第一次 DESCEND（创建线程）：
+        - 子域没有上下文，清零 r4-r12
+        - LR 从 DomainBlock.saved_lr 恢复（父域在 DESCEND 前设置入口地址）
+        - SP 保持为 0（由父域软件通过 DomainBlock 设置）
+
+        后续 DESCEND（RETURN 复用）：
+        - 从 DomainBlock 恢复子域上下文（SP, LR, PSR）
+
+        安全措施：清空 r4-r12 防止信息泄露
 
         Args:
-            block_addr: DomainBlock 在内存中的地址
+            block_addr: 子域 DomainBlock 在内存中的地址
         """
-        # SimpleISA 默认不保存上下文
-        # 软件需要在控制块之外自行分配空间保存寄存器状态
-        pass
+        # 清空 callee-saved 寄存器（安全措施）
+        for i in range(REG_CALLEE_SAVED_START, REG_CALLEE_SAVED_END + 1):
+            self.state.set_reg(i, 0)
+
+        # 恢复上下文（包括 LR）
+        # 首次: saved_lr 由父域设置为入口地址
+        # 后续: saved_lr 由 ESCALATE 保存返回地址
+        self._restore_context(block_addr)
 
     def complete_escalate(self, block_addr: int, service_type: int) -> None:
         """
         RPALogic pseudo-RTL 在 ESCALATE 后自动调用
 
-        ISA 可在此：
-        - 保存上下文（软件自行决定存储位置）
-        - 决定返回地址（PC+4 或其他）
+        保存子域上下文到子域 DomainBlock：
+        - SP (r13)
+        - LR (返回地址 = PC + 4)
+        - PSR (N, Z, C, V 标志位)
+
+        注意：r0-r3 不保存，用于传递参数/返回值
 
         Args:
             block_addr: 当前域 DomainBlock 在内存中的地址
-            service_type: 服务类型（从 rd 寄存器读取）
+            service_type: 服务类型（从 r0 寄存器读取）
         """
-        # SimpleISA 默认不保存上下文
-        # 软件需要在控制块之外自行分配空间保存寄存器状态
-        pass
+        self._save_context(block_addr)
 
     def reset(self) -> None:
         """重置核心状态"""

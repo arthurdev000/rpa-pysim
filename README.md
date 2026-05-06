@@ -6,18 +6,18 @@ Recursive Privilege Architecture (RPA) 概念验证模拟器。
 
 ```
 rpa-sim/
-├── .pyvenv/              # Python虚拟环境
 ├── rpa_sim/              # 核心模拟器
-│   ├── __init__.py
-│   ├── core.py           # RPA核心原语实现
-│   ├── arm_emulator.py   # 简化ARM指令解释器
-│   └── memory.py         # 内存管理
+│   ├── __init__.py       # 包导出
+│   ├── rpa_logic.py      # RPA核心原语实现
+│   ├── isa_simple.py     # 简化ISA解释器
+│   ├── memory.py         # 内存和页表管理
+│   ├── machine.py        # 完整机器集成
+│   └── stdio.py          # 标准IO设备
 ├── tests/                # 单元测试
-│   └── test_core.py
-├── examples/             # 演示案例
-│   ├── nested_virtualization.py
-│   ├── syscall_demo.py
-│   └── try_catch_demo.py
+│   ├── test_rpa.py       # RPA核心测试
+│   ├── test_isa_simple.py # ISA测试
+│   └── test_thread_exception.py # 线程异常测试
+├── docs/                 # 文档
 ├── requirements.txt
 └── README.md
 ```
@@ -25,83 +25,63 @@ rpa-sim/
 ## 安装
 
 ```bash
-# 激活虚拟环境
-source .pyvenv/bin/activate
-
-# 安装依赖
 pip install -r requirements.txt
 ```
 
 ## 快速开始
 
 ```python
-from rpa_sim import RPACore
+from rpa_sim import RPALogic, DomainBlock, Memory, SimpleISA
 
-# 创建RPA核心
-rpa = RPACore()
+# 创建RPA核心和内存
+mem = Memory(size=64 * 1024)
+rpa = RPALogic()
+rpa.memory = mem
 
-# 配置子层
-rpa.configure_sublayer(0, entry=0x1000, exception_vector=0x2000)
+# 设置子域控制块
+block_addr = 0x1000
+mem.write_word(block_addr + 0x00, 32)      # ctrlblock_size
+mem.write_word(block_addr + 0x04, 0x3000)  # exception_vector
+mem.write_word(block_addr + 0x10, 0)       # memtable_address
+mem.write_word(block_addr + 0x24, 0x2000)  # saved_lr (入口地址)
 
-# 进入子层
-rpa.descend({"operation": "test"})
-
-# 子层请求上层服务
-rpa.escalate({"request": "read_file", "path": "/etc/config"})
-
-# 返回结果
-result = rpa.get_result()
-```
-
-## 测试案例
-
-### 案例1：嵌套虚拟化
-演示多层descend/escalate，模拟Host → Hypervisor → Guest OS → App的层级结构。
-
-### 案例2：系统调用
-演示共享页表的快速系统调用，escalate成本接近函数调用。
-
-### 案例3：Try-Catch
-演示使用子层实现try-catch机制，异常通过escalate上报。
-
-## 运行测试
-
-```bash
-# 激活虚拟环境
-source .pyvenv/bin/activate
-
-# 运行所有测试
-python -m pytest tests/
-
-# 运行演示案例
-python examples/nested_virtualization.py
-python examples/syscall_demo.py
-python examples/try_catch_demo.py
+# 创建ISA核心并执行
+core = SimpleISA(rpa=rpa, memory=mem)
+core.load_assembly("MOV R0, #0x1000\nDESCEND R0", base_addr=0)
+core.run()
 ```
 
 ## RPA原语
 
-| 原语 | 说明 |
+| 指令 | 说明 |
 |------|------|
-| `descend(params)` | 进入子层，params传递给子层 |
-| `escalate(params)` | 请求上层服务，params传递给上层 |
+| `DESCEND Rn` | 进入子域，Rn为子域控制块地址 |
+| `ESCALATE Rn` | 请求父域服务，Rn为服务类型 |
+| `RETURN Rn` | 从父域返回子域，Rn为子域控制块地址 |
+| `EXIT Rn` | 退出子域并释放资源，Rn=0 |
 
-## 配置结构
+## DomainBlock 内存布局
 
-```python
-level_config = {
-    "service_vector": addr,      # 服务请求入口
-    "exception_vector": addr,    # 异常入口
-    "sub": [
-        {
-            "entry": addr,
-            "exception_vector": addr,
-            "page_table": INHERIT | addr,
-        },
-    ],
-}
+| 偏移 | 字段 | 说明 |
+|------|------|------|
+| 0x00 | ctrlblock_size | 控制块大小（必须为32的倍数） |
+| 0x04 | exception_vector | 异常向量 |
+| 0x08 | interrupt_vector | 中断向量 |
+| 0x0C | interrupt_ctrl | 中断控制器 |
+| 0x10 | memtable_address | 内存翻译表地址 |
+| 0x14 | domain_id | 域ID（系统分配） |
+| 0x18 | parent_block | 父域控制块地址（系统写入） |
+| 0x1C | child_block | 子域控制块地址（父域维护） |
+| 0x20 | saved_sp | 保存的栈指针（ISA扩展） |
+| 0x24 | saved_lr | 保存的返回地址（ISA扩展） |
+| 0x28 | saved_psr | 保存的程序状态（ISA扩展） |
+
+## 运行测试
+
+```bash
+python -m pytest tests/ -v
 ```
 
 ## 参考
 
-详见 `../TECHNICAL_SPEC.md` 完整技术规范。
+详见 `docs/CONTROL_BLOCK_SPEC.md` 和 `notes.md`。
