@@ -45,8 +45,8 @@ DomainBlock (控制块):
     ├────────────┼───────────────────────────────────────────────────┤
     │ 0x00       │ ctrlblock_size      控制块大小 (含自身)           │
     │ 0x04       │ exception_vector    异常向量                      │
-    │ 0x08       │ interrupt_vector    中断向量                      │
-    │ 0x0C       │ interrupt_ctrl      中断控制器                    │
+    │ 0x08       │ reserved_08         保留                          │
+    │ 0x0C       │ interrupt_ctrl      中断控制器 handle             │
     │ 0x10       │ memtable_address    内存区域表地址                │
     │ 0x14       │ domain_id           域ID (系统分配，调试用)       │
     │ 0x18       │ parent_block        父域控制块地址 (可选)         │
@@ -63,10 +63,35 @@ DomainBlock (控制块):
     - 由父域维护，记录子域控制块地址
     - 用于 RETURN 指令返回子域
 
+    interrupt_ctrl 说明:
+    - 中断控制器实例 handle
+    - 通过 sysop irq, request 申请获得
+    - 用于 sysop irq 操作
+
 ISA 扩展区域 (偏移 0x20 起):
     │ 0x20       │ saved_sp            ISA 保存的栈指针            │
     │ 0x24       │ saved_lr            ISA 保存的返回地址          │
     │ 0x28       │ saved_psr           ISA 保存的程序状态寄存器    │
+    │ 0x2C-0x3F  │ reserved            保留（对齐到 64 字节）      │
+
+中断现场保存区域 (偏移 0x40 起):
+    │ 0x40       │ irq_saved_r0        中断保存 R0                 │
+    │ 0x44       │ irq_saved_r1        中断保存 R1                 │
+    │ 0x48       │ irq_saved_r2        中断保存 R2                 │
+    │ 0x4C       │ irq_saved_r3        中断保存 R3                 │
+    │ 0x50       │ irq_saved_r4        中断保存 R4                 │
+    │ 0x54       │ irq_saved_r5        中断保存 R5                 │
+    │ 0x58       │ irq_saved_r6        中断保存 R6                 │
+    │ 0x5C       │ irq_saved_r7        中断保存 R7                 │
+    │ 0x60       │ irq_saved_r8        中断保存 R8                 │
+    │ 0x64       │ irq_saved_r9        中断保存 R9                 │
+    │ 0x68       │ irq_saved_r10       中断保存 R10                │
+    │ 0x6C       │ irq_saved_r11       中断保存 R11                │
+    │ 0x70       │ irq_saved_r12       中断保存 R12                │
+    │ 0x74       │ irq_saved_sp        中断保存 SP                 │
+    │ 0x78       │ irq_saved_lr        中断保存 LR                 │
+    │ 0x7C       │ irq_saved_pc        中断保存 PC                 │
+    │ 0x80       │ irq_saved_psr       中断保存 PSR                │
 
 DESCEND 流程:
 =============
@@ -168,12 +193,15 @@ CTRLBLOCK_MIN_SIZE = 28  # 最小有效大小
 # DomainBlock 字段偏移
 OFFSET_CTRLBLOCK_SIZE = 0x00
 OFFSET_EXCEPTION_VECTOR = 0x04
-OFFSET_INTERRUPT_VECTOR = 0x08
+OFFSET_RESERVED_08 = 0x08           # 保留（原 interrupt_vector）
 OFFSET_INTERRUPT_CTRL = 0x0C
 OFFSET_MEMTABLE_ADDRESS = 0x10
 OFFSET_DOMAIN_ID = 0x14
 OFFSET_PARENT_BLOCK = 0x18
 OFFSET_CHILD_BLOCK = 0x1C
+
+# DomainBlock 大小常量
+CTRLBLOCK_BASE_SIZE = 0x20          # 基本大小 32 字节
 
 
 @dataclass
@@ -191,8 +219,8 @@ class DomainBlock:
     # 配置字段 (父域在 DESCEND 前写入)
     ctrlblock_size: int = CTRLBLOCK_SIZE   # 0x00: 控制块大小
     exception_vector: int = 0               # 0x04: 异常向量
-    interrupt_vector: int = 0               # 0x08: 中断向量
-    interrupt_ctrl: int = 0                 # 0x0C: 中断控制器
+    # 0x08: 保留（原 interrupt_vector）
+    interrupt_ctrl: int = 0                 # 0x0C: 中断控制器 handle
     memtable_address: int = 0               # 0x10: 内存区域表地址
     domain_id: int = 0                      # 0x14: 域ID (系统分配)
     parent_block: int = 0                   # 0x18: 父域控制块地址 (可选)
@@ -495,7 +523,7 @@ class RPALogic:
             return DomainBlock(
                 ctrlblock_size=self.memory.read_word(addr + OFFSET_CTRLBLOCK_SIZE),
                 exception_vector=self.memory.read_word(addr + OFFSET_EXCEPTION_VECTOR),
-                interrupt_vector=self.memory.read_word(addr + OFFSET_INTERRUPT_VECTOR),
+                # 0x08 保留
                 interrupt_ctrl=self.memory.read_word(addr + OFFSET_INTERRUPT_CTRL),
                 memtable_address=self.memory.read_word(addr + OFFSET_MEMTABLE_ADDRESS),
                 domain_id=self.memory.read_word(addr + OFFSET_DOMAIN_ID),
@@ -509,7 +537,7 @@ class RPALogic:
         if self.memory:
             self.memory.write_word(addr + OFFSET_CTRLBLOCK_SIZE, block.ctrlblock_size)
             self.memory.write_word(addr + OFFSET_EXCEPTION_VECTOR, block.exception_vector)
-            self.memory.write_word(addr + OFFSET_INTERRUPT_VECTOR, block.interrupt_vector)
+            # 0x08 保留
             self.memory.write_word(addr + OFFSET_INTERRUPT_CTRL, block.interrupt_ctrl)
             self.memory.write_word(addr + OFFSET_MEMTABLE_ADDRESS, block.memtable_address)
             self.memory.write_word(addr + OFFSET_DOMAIN_ID, block.domain_id)

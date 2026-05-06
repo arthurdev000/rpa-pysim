@@ -10,6 +10,7 @@ Main components:
 - TranslationError, BusError, PermissionError: Address translation exceptions
 - SimpleISA: Simplified instruction set core (ARM-like)
 - Machine: Complete machine integrating all components
+- InterruptController: Interrupt management
 """
 
 from .rpa_logic import (
@@ -23,6 +24,9 @@ from .memory import (
 from .isa_simple import SimpleISA, Assembler, CPUState, Instruction, OpCode, Asm
 from .machine import Machine, STDIO_BASE
 from .stdio import StdioDevice, StdioDeviceManager
+from .interrupt import (
+    InterruptController, InterruptInstance, IrqPerm, IrqSubOp
+)
 
 __version__ = "0.7.0"
 __all__ = [
@@ -38,4 +42,6 @@ __all__ = [
     "Machine", "STDIO_BASE",
     # Stdio
     "StdioDevice", "StdioDeviceManager",
+    # Interrupt
+    "InterruptController", "InterruptInstance", "IrqPerm", "IrqSubOp",
 ]
