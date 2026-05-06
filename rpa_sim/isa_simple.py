@@ -737,57 +737,27 @@ class SimpleISA:
         # 更新 domain_block_addr
         self.domain_block_addr = block_addr
 
-    def _execute_escalate(self, inst: Instruction) -> None:
+    def _execute_escalate(self, inst: Instruction, release: bool = False) -> None:
         """
-        执行 ESCALATE 指令
+        执行 ESCALATE/EXIT 指令
 
         RTL 操作：
         1. 读取 service_type
         2. 调用 ISA.complete_escalate() 保存上下文
         3. 切换到父域，跳转到 exception_vector
+
+        Args:
+            inst: 指令
+            release: True 表示 EXIT（释放子域），False 表示 ESCALATE
         """
         service_type = self.state.get_reg(inst.rd)
         block_addr = self.domain_block_addr
 
-        # RTL 调用 ISA 接口
+        # RTL 调用 ISA 接口保存上下文
         self.complete_escalate(block_addr, service_type)
 
         # 通过 RPALogic 切换域
-        result = self.rpa.escalate(service_type)
-        vector = result.get("vector", 0)
-        if vector:
-            self.state.pc = vector
-        else:
-            self.halted = True
-        # 更新 memtable_chain（移除当前域的页表）
-        if self.memtable_chain:
-            self.memtable_chain = self.memtable_chain[1:]
-
-    def _execute_exit(self, inst: Instruction) -> None:
-        """
-        执行 EXIT 指令
-
-        EXIT = ESCALATE + 释放子域
-
-        RTL 操作：
-        1. 读取 service_type
-        2. 调用 ISA.complete_escalate() 保存上下文（可选，因为不会再返回）
-        3. 调用 RPALogic.exit_domain() 切换到父域并清空父子关系
-        4. 跳转到 exception_vector
-
-        与 ESCALATE 的区别：
-        - ESCALATE: 子域暂停，父域处理后可 RETURN 回来
-        - EXIT: 子域终止，父域无法 RETURN，子域控制块可被重新使用
-        """
-        service_type = self.state.get_reg(inst.rd)
-        block_addr = self.domain_block_addr
-
-        # RTL 调用 ISA 接口（可选保存，因为不会再返回）
-        # 仍然保存以便调试/故障排查
-        self.complete_escalate(block_addr, service_type)
-
-        # 通过 RPALogic 切换域并释放子域
-        result = self.rpa.exit_domain(service_type)
+        result = self.rpa.escalate(service_type, release=release)
         vector = result.get("vector", 0)
         if vector:
             self.state.pc = vector
@@ -798,6 +768,15 @@ class SimpleISA:
             self.memtable_chain = self.memtable_chain[1:]
         # 更新 domain_block_addr 为父域
         self.domain_block_addr = self.rpa.current_domain.block_addr
+
+    def _execute_exit(self, inst: Instruction) -> None:
+        """
+        执行 EXIT 指令
+
+        EXIT = ESCALATE(release=True)
+        子域终止，父域无法 RETURN，子域控制块可被重新使用。
+        """
+        self._execute_escalate(inst, release=True)
 
     def _execute_return(self, inst: Instruction) -> None:
         """
