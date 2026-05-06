@@ -15,7 +15,7 @@
 | Emulator | ISADecoder | ✅ 完成 → SimpleCore |
 | interrupt_ctrl_base | interrupt_ctrl | ✅ 完成 |
 | pagetable_addr | (已删除) | ✅ 完成 |
-| RPACore | RPALogic | ✅ 完成 |
+| RPACore | RPALogic | ✅ 完成（别名已移除） |
 | SimpleCore | SimpleISA | ✅ 完成 |
 | emulator.py | isa_simple.py | ✅ 完成 |
 | core.py | rpa_logic.py | ✅ 完成 |
@@ -31,18 +31,40 @@
 | LevelConfig | DomainBlock |
 | INHERIT | PageTableMode.INHERIT 或删除（概念上表示继承页表） |
 
-### DomainBlock 字段 (32 字节, 32字节对齐)
+### DomainBlock 字段 (28 字节 + 4 字节填充 = 32 字节, 32字节对齐)
 
 | 偏移 | 字段 | 说明 |
 |------|------|------|
 | 0x00 | ctrlblock_size | 控制块大小（必须为32的倍数，DESCEND时验证） |
-| 0x04 | execution_address | 执行入口地址 |
-| 0x08 | exception_vector | 异常向量（ESCALATE/故障跳转地址） |
-| 0x0C | interrupt_vector | 中断向量 |
-| 0x10 | interrupt_ctrl | 中断控制器 |
-| 0x14 | memtable_address | 内存翻译表地址 |
-| 0x18 | domain_id | 域ID（系统分配，调试用） |
-| 0x1C | parent_block | 父域控制块地址（可选） |
+| 0x04 | exception_vector | 异常向量（ESCALATE/故障跳转地址） |
+| 0x08 | interrupt_vector | 中断向量 |
+| 0x0C | interrupt_ctrl | 中断控制器 |
+| 0x10 | memtable_address | 内存翻译表地址 |
+| 0x14 | domain_id | 域ID（系统分配，调试用） |
+| 0x18 | parent_block | 父域控制块地址（系统写入） |
+| 0x1C | child_block | 子域控制块地址（父域维护） |
+
+### ISA 扩展区域 (偏移 0x20 起)
+
+| 偏移 | 字段 | 说明 |
+|------|------|------|
+| 0x20 | saved_sp | ISA 保存的栈指针 |
+| 0x24 | saved_lr | ISA 保存的返回地址（首次DESCEND父域写入入口，ESCALATE保存返回地址） |
+| 0x28 | saved_psr | ISA 保存的程序状态寄存器 |
+
+### DESCEND 执行流程
+
+**统一使用 saved_lr 作为入口点：**
+
+1. **首次 DESCEND**：
+   - 父域在执行 DESCEND 前将入口地址写入 saved_lr (0x24)
+   - 子域从 saved_lr 开始执行
+   - ISA 清零 callee-saved 寄存器（r4-r12）
+
+2. **后续 DESCEND (RETURN)**：
+   - 从 saved_lr 恢复返回地址（ESCALATE 已保存）
+   - 从 saved_sp 恢复栈指针
+   - 从 saved_psr 恢复状态标志
 
 ### memtable_address 说明
 
@@ -50,6 +72,15 @@
 - 子域如需建立映射：保存旧表 → 创建新表 → 更新此字段
 - 更新动作表示新页表生效
 - 值为 0 表示不建立新映射（try-catch 场合）
+
+### child_block 说明
+
+- 由父域维护，记录子域控制块地址
+- 用于 RETURN 指令返回子域
+- DESCEND 时自动写入父域的 child_block 字段
+- **首次/后续 DESCEND 判断**：通过检查父域的 child_block 是否等于目标 block_addr 来判断
+  - child_block == block_addr → 已有子域，RETURN 语义
+  - child_block != block_addr → 首次 DESCEND，创建新域
 
 ### 页表属性 (rwx c)
 
@@ -109,20 +140,38 @@
 
 3. **跨域数据传递**
    - 寄存器传递：R0-R12, LR, SP 由 ISA 软件保存/恢复
-   - 控制块传递：execution_address, exception_vector, memtable_address 等
-   - 输入字段：ctrlblock_size, execution_address, exception_vector, interrupt_vector, interrupt_ctrl, memtable_address
-   - 输出字段：domain_id (系统分配), parent_block (可选)
+   - 控制块传递：exception_vector, memtable_address 等
+   - 输入字段：ctrlblock_size, exception_vector, interrupt_vector, interrupt_ctrl, memtable_address
+   - 输出字段：domain_id (系统分配), parent_block (系统写入), child_block (父域维护)
 
 4. **domain_id 分配** ✅
    - 自动递增分配（_next_domain_id）
    - 唯一性保证（每个新域分配新ID）
-   - 写入控制块 0x18 偏移
+   - 写入控制块 0x14 偏移
+
+5. **child_block 维护** ✅
+   - DESCEND 时自动更新父域的 child_block 字段
+   - 同时更新子域的 parent_block 字段
 
 ## 控制块设计
 
 详见 `docs/CONTROL_BLOCK_SPEC.md`
 
 ## 已完成
+
+### 2026-05-06: 代码清理
+- 移除 `RPACore` 向后兼容别名（统一使用 `RPALogic`）
+- 移除未使用的 `complete_return` 方法
+- 删除过时的示例文件（examples/ 目录，使用已废弃API）
+- 更新 README.md 使用当前 API
+- 版本保持 0.7.0
+
+### 2026-05-05: EXIT 指令实现
+- 新增 EXIT 指令：ESCALATE + 释放子域
+- EXIT 清空父子关系：parent.child_block = 0, child.parent_block = 0
+- EXIT 清空子域 domain_id
+- child_block 冲突检测：父域已有不同子域时报错
+- 测试覆盖 EXIT 场景
 
 ### 2026-05-05: DomainBlock 重构
 - 移除 status 字段（旧残留）
