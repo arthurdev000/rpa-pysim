@@ -39,7 +39,7 @@ DomainBlock (控制块):
 
     ┌────────────────────────────────────────────────────────────────┐
     │                    DomainBlock 内存布局                        │
-    │                     (28 字节, 32字节对齐)                      │
+    │                     (40 字节, 32字节对齐)                      │
     ├────────────┬───────────────────────────────────────────────────┤
     │ 偏移       │ 字段                                              │
     ├────────────┼───────────────────────────────────────────────────┤
@@ -51,6 +51,8 @@ DomainBlock (控制块):
     │ 0x14       │ domain_id           域ID (系统分配，调试用)       │
     │ 0x18       │ parent_block        父域控制块地址 (可选)         │
     │ 0x1C       │ child_block         子域控制块地址 (父域维护)     │
+    │ 0x20       │ security_domain     安全域 handle                 │
+    │ 0x24       │ access_id           访问 ID (DMA 用)              │
     └────────────┴───────────────────────────────────────────────────┘
 
     ctrlblock_size 说明:
@@ -181,8 +183,11 @@ ESCALATE 流程:
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Optional, List, Dict, Callable
+from typing import Any, Optional, List, Dict, Callable, TYPE_CHECKING
 from enum import Enum, auto
+
+if TYPE_CHECKING:
+    from .security_domain import SecurityDomainController
 
 
 # DomainBlock 常量
@@ -199,9 +204,14 @@ OFFSET_MEMTABLE_ADDRESS = 0x10
 OFFSET_DOMAIN_ID = 0x14
 OFFSET_PARENT_BLOCK = 0x18
 OFFSET_CHILD_BLOCK = 0x1C
+# 安全域扩展字段
+OFFSET_SECURITY_DOMAIN = 0x20       # 安全域 handle
+OFFSET_ACCESS_ID = 0x24             # 访问 ID (DMA 用)
 
 # DomainBlock 大小常量
 CTRLBLOCK_BASE_SIZE = 0x20          # 基本大小 32 字节
+CTRLBLOCK_SECURITY_SIZE = 0x28      # 含安全域字段 40 字节
+CTRLBLOCK_ALIGN = 32                # 对齐要求
 
 
 @dataclass
@@ -211,7 +221,7 @@ class DomainBlock:
 
     父域在内存中分配此结构，然后执行 DESCEND 使配置生效。
 
-    大小: 28 字节 (基本) + 4 字节填充 = 32 字节
+    大小: 40 字节 (含安全域扩展)
     对齐: 32 字节边界
 
     见文件头部 ASCII 图解
@@ -225,6 +235,10 @@ class DomainBlock:
     domain_id: int = 0                      # 0x14: 域ID (系统分配)
     parent_block: int = 0                   # 0x18: 父域控制块地址 (可选)
     child_block: int = 0                    # 0x1C: 子域控制块地址 (父域维护)
+
+    # 安全域扩展字段
+    security_domain: int = 0                # 0x20: 安全域 handle
+    access_id: int = 0                      # 0x24: 访问 ID (DMA 用)
 
     # 向后兼容字段
     params: Dict[str, Any] = field(default_factory=dict)
@@ -277,6 +291,9 @@ class RPALogic:
         # 域ID分配器
         self._next_domain_id = 1
 
+        # 安全域控制器引用
+        self.security_controller: Optional['SecurityDomainController'] = None
+
         # 根域 (domain_id = 0)
         root_block = DomainBlock(
             ctrlblock_size=CTRLBLOCK_SIZE,
@@ -307,6 +324,13 @@ class RPALogic:
             "escalate_count": 0,
             "fault_count": 0,
         }
+
+    def set_security_controller(self, controller: 'SecurityDomainController') -> None:
+        """设置安全域控制器"""
+        self.security_controller = controller
+        # 设置 root 域的安全域
+        if controller:
+            self.root_domain.block.security_domain = controller.root_handle
 
     def _validate_ctrlblock(self, addr: int) -> None:
         """验证控制块大小和对齐"""
@@ -402,7 +426,24 @@ class RPALogic:
         # 首次 DESCEND：创建新域
         block = self._read_domain_block(block_addr)
 
+        # 读取安全域配置
+        sec_domain_handle = block.security_domain
+
         # 分配 domain_id
+        # 如果有安全域控制器，可以从安全子系统分配
+        if self.security_controller and self.security_controller.enabled:
+            # 从安全域获取 domain_id
+            if sec_domain_handle == 0:
+                # 继承父域的安全域
+                sec_domain_handle = self.current_domain.block.security_domain
+                # 如果父域也没有安全域，使用 root_handle
+                if sec_domain_handle == 0:
+                    sec_domain_handle = self.security_controller.root_handle
+            # 绑定域到安全域
+            if sec_domain_handle:
+                self.security_controller.bind_domain(sec_domain_handle, domain_id if domain_id else self._next_domain_id)
+
+        # 如果还没分配 domain_id，使用默认分配
         if domain_id is None:
             domain_id = self._next_domain_id
             self._next_domain_id += 1
@@ -410,13 +451,20 @@ class RPALogic:
         # 更新 Python 对象
         block.domain_id = domain_id
         block.parent_block = self.current_domain.block_addr
+        block.security_domain = sec_domain_handle
+
         self.current_domain.block.child_block = block_addr
 
         # 写入内存
         if self.memory:
             self.memory.write_word(block_addr + OFFSET_DOMAIN_ID, domain_id)
             self.memory.write_word(block_addr + OFFSET_PARENT_BLOCK, self.current_domain.block_addr)
+            self.memory.write_word(block_addr + OFFSET_SECURITY_DOMAIN, sec_domain_handle)
             self.memory.write_word(self.current_domain.block_addr + OFFSET_CHILD_BLOCK, block_addr)
+
+        # 绑定到安全域
+        if self.security_controller and sec_domain_handle:
+            self.security_controller.bind_domain(sec_domain_handle, domain_id)
 
         # 创建新域对象（用于错误归属）
         new_domain = Domain(
@@ -459,6 +507,8 @@ class RPALogic:
 
         parent = self.current_domain.parent
         child_block_addr = self.current_domain.block_addr
+        child_domain_id = self.current_domain.domain_id
+        child_sec_domain = self.current_domain.block.security_domain
 
         self.stats["escalate_count"] += 1
 
@@ -474,6 +524,10 @@ class RPALogic:
                 self.memory.write_word(parent.block_addr + OFFSET_CHILD_BLOCK, 0)
                 self.memory.write_word(child_block_addr + OFFSET_PARENT_BLOCK, 0)
                 self.memory.write_word(child_block_addr + OFFSET_DOMAIN_ID, 0)
+
+            # 解绑安全域
+            if self.security_controller and child_sec_domain:
+                self.security_controller.unbind_domain(child_sec_domain, child_domain_id)
 
             # 从注册表移除子域
             if child_block_addr in self._domain_registry:
@@ -529,6 +583,8 @@ class RPALogic:
                 domain_id=self.memory.read_word(addr + OFFSET_DOMAIN_ID),
                 parent_block=self.memory.read_word(addr + OFFSET_PARENT_BLOCK),
                 child_block=self.memory.read_word(addr + OFFSET_CHILD_BLOCK),
+                security_domain=self.memory.read_word(addr + OFFSET_SECURITY_DOMAIN),
+                access_id=self.memory.read_word(addr + OFFSET_ACCESS_ID),
             )
         return DomainBlock()
 
@@ -543,6 +599,8 @@ class RPALogic:
             self.memory.write_word(addr + OFFSET_DOMAIN_ID, block.domain_id)
             self.memory.write_word(addr + OFFSET_PARENT_BLOCK, block.parent_block)
             self.memory.write_word(addr + OFFSET_CHILD_BLOCK, block.child_block)
+            self.memory.write_word(addr + OFFSET_SECURITY_DOMAIN, block.security_domain)
+            self.memory.write_word(addr + OFFSET_ACCESS_ID, block.access_id)
 
     def _get_pc(self) -> int:
         """获取当前 PC"""

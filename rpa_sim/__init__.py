@@ -11,15 +11,18 @@ Main components:
 - SimpleISA: Simplified instruction set core (ARM-like)
 - Machine: Complete machine integrating all components
 - InterruptController: Interrupt management
+- SecurityDomainController: Security domain management
 """
 
 from .rpa_logic import (
     RPALogic, Domain, DomainBlock, FaultInfo,
-    CTRLBLOCK_SIZE, CTRLBLOCK_ALIGN, CTRLBLOCK_MIN_SIZE, DomainBlockError
+    CTRLBLOCK_SIZE, CTRLBLOCK_ALIGN, CTRLBLOCK_MIN_SIZE, DomainBlockError,
+    OFFSET_SECURITY_DOMAIN, OFFSET_ACCESS_ID
 )
 from .memory import (
     MemoryManager, PageTable, PageTableEntry, Memory,
-    TranslationError, BusError, PermissionError, TranslationResult
+    TranslationError, BusError, PermissionError, TranslationResult,
+    EncryptedRegion
 )
 from .isa_simple import SimpleISA, Assembler, CPUState, Instruction, OpCode, Asm
 from .machine import Machine, STDIO_BASE
@@ -27,15 +30,21 @@ from .stdio import StdioDevice, StdioDeviceManager
 from .interrupt import (
     InterruptController, InterruptInstance, IrqPerm, IrqSubOp
 )
+from .security_domain import (
+    SecurityDomainController, SecurityDomain, SecurityDomainConfig,
+    SecDomainPerm, EncryptedRegion as SecEncryptedRegion
+)
 
 __version__ = "0.7.0"
 __all__ = [
     # Core
     "RPALogic", "Domain", "DomainBlock", "FaultInfo",
     "CTRLBLOCK_SIZE", "CTRLBLOCK_ALIGN", "CTRLBLOCK_MIN_SIZE", "DomainBlockError",
+    "OFFSET_SECURITY_DOMAIN", "OFFSET_ACCESS_ID",
     # Memory
     "MemoryManager", "PageTable", "PageTableEntry", "Memory",
     "TranslationError", "BusError", "PermissionError", "TranslationResult",
+    "EncryptedRegion",
     # ISA
     "SimpleISA", "Assembler", "CPUState", "Instruction", "OpCode", "Asm",
     # Machine
@@ -44,4 +53,7 @@ __all__ = [
     "StdioDevice", "StdioDeviceManager",
     # Interrupt
     "InterruptController", "InterruptInstance", "IrqPerm", "IrqSubOp",
+    # Security Domain
+    "SecurityDomainController", "SecurityDomain", "SecurityDomainConfig",
+    "SecDomainPerm",
 ]

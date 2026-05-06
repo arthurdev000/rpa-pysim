@@ -213,6 +213,11 @@
 - 彻底清零安全子域数据
 - 共享内存段不清除（父域本就可访问）
 
+**回收约束**:
+- 安全域创建后，必须经过正常回收才能释放
+- 父域释放时需等待安全子域退出完成
+- 安全子系统故障时，只能由 root 域调用 memory 接口强制销毁该区域
+
 **信息上报**:
 - 父域程序通过寄存器上报
 - 共享内存段传递数据
@@ -231,11 +236,52 @@
 
 ### 待实现
 
-- [ ] memory 模块扩展支持安全域
-- [ ] domain_id 生成机制
-- [ ] 安全域创建/销毁接口
-- [ ] DMA 访问控制
-- [ ] 内存加密模拟
+- [x] memory 模块扩展支持安全域
+- [x] domain_id 生成机制
+- [x] 安全域创建/销毁接口
+- [x] DMA 访问控制
+- [x] 内存加密模拟
+
+## 2026-05-06: 安全域系统实现
+
+### 新增文件
+- `rpa_sim/security_domain.py`: 安全域控制器模块
+
+### 新增数据结构
+- `SecurityDomainConfig`: 安全域配置参数
+- `SecurityDomain`: 安全域实例
+- `SecurityDomainController`: 全局安全域控制器
+
+### DomainBlock 扩展字段
+| 偏移 | 字段 | 说明 |
+|------|------|------|
+| 0x20 | security_domain | 安全域 handle |
+| 0x24 | access_id | 访问 ID (DMA 用) |
+
+### sysop secdomain 子操作
+| 操作码 | 名称 | 说明 |
+|--------|------|------|
+| 0x01 | CREATE | 创建安全域 |
+| 0x02 | DESTROY | 销毁安全域 |
+| 0x03 | BIND | 绑定域到安全域 |
+| 0x04 | UNBIND | 解绑 |
+| 0x05 | GET_ID | 获取 domain_id |
+| 0x06 | SET_ENCRYPTION | 设置加密 |
+| 0x07 | ADD_ACCESSOR | 添加 DMA 访问者 |
+| 0x08 | REMOVE_ACCESSOR | 移除访问者 |
+| 0x09 | FORCE_DESTROY | 强制销毁（root only） |
+| 0x0A | GET_HANDLE | 获取域的安全域 handle |
+
+### 安全域特性
+1. **Handle-based 访问**: 安全域 handle 从 0x2000 开始分配
+2. **引用计数管理**: 绑定域时增加，解绑时减少
+3. **回收约束**: 引用计数为 0 才能销毁；root 可强制销毁
+4. **DMA 访问控制**: 同一安全域内允许；机密计算域禁止外部访问
+5. **内存加密**: XOR 模拟加密，支持设置加密区域
+
+### domain_id 分配
+- 无安全子系统: RPALogic 分配 (1, 2, 3...)
+- 有安全子系统: SecurityDomainController 分配 (0x0100 起)
 
 ## 已完成
 

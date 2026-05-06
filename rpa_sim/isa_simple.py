@@ -459,7 +459,7 @@ class SimpleISA:
     - 保存所有寄存器到中断现场保存区
     """
 
-    def __init__(self, rpa, memory=None, memory_manager=None, interrupt_controller=None):
+    def __init__(self, rpa, memory=None, memory_manager=None, interrupt_controller=None, security_controller=None):
         """
         初始化核心。
 
@@ -468,12 +468,14 @@ class SimpleISA:
             memory: Memory 实例（物理内存）
             memory_manager: MemoryManager 实例（带翻译的读写）
             interrupt_controller: InterruptController 实例（中断管理）
+            security_controller: SecurityDomainController 实例（安全域管理）
         """
         self.state = CPUState()
         self.rpa = rpa
         self.memory = memory
         self.memory_manager = memory_manager
         self.interrupt_controller = interrupt_controller
+        self.security_controller = security_controller
 
         # 当前 Domain 的 memtable 翻译链
         # [domain_n.memtable, ..., domain_0.memtable]
@@ -749,6 +751,11 @@ class SimpleISA:
             self._execute_sysop_irq(subop, arg1, arg2, inst.rd, inst.rn)
             return
 
+        # 安全域操作（仅当有 security_controller 时处理）
+        if op == 0x02 and self.security_controller:
+            self._execute_sysop_secdomain(subop, arg1, arg2, inst.rd, inst.rn)
+            return
+
         # 其他操作使用自定义 handler
         if self.sysop_handler:
             result = self.sysop_handler(op, subop, arg1, arg2, inst.rd, inst.rn)
@@ -811,6 +818,116 @@ class SimpleISA:
             current_handle = self.rpa.current_domain.block.interrupt_ctrl
             if current_handle:
                 self.interrupt_controller.sgi(current_handle, target_handle, irq_num)
+
+    def _execute_sysop_secdomain(self, subop: int, arg1: int, arg2: int, rd: int, rn: int) -> None:
+        """执行 sysop secdomain 指令"""
+        if not self.security_controller:
+            return
+
+        from .security_domain import SecurityDomainConfig
+
+        # SecDomainSubOp 操作码
+        SECDOMAIN_CREATE = 0x01
+        SECDOMAIN_DESTROY = 0x02
+        SECDOMAIN_BIND = 0x03
+        SECDOMAIN_UNBIND = 0x04
+        SECDOMAIN_GET_ID = 0x05
+        SECDOMAIN_SET_ENCRYPTION = 0x06
+        SECDOMAIN_ADD_ACCESSOR = 0x07
+        SECDOMAIN_REMOVE_ACCESSOR = 0x08
+        SECDOMAIN_FORCE_DESTROY = 0x09
+        SECDOMAIN_GET_HANDLE = 0x0A
+
+        if subop == SECDOMAIN_CREATE:
+            # sysop secdomain, create, R0, R1
+            # R0 = config flags (bit 0: isolated, bit 1: encrypted, bit 2: confidential)
+            # R1 = 返回 handle
+            flags = self.state.get_reg(0)
+            config = SecurityDomainConfig(
+                inherit_from_parent=False,
+                create_new=True,
+                isolated=bool(flags & 0x01),
+                encrypted=bool(flags & 0x02),
+                confidential=bool(flags & 0x04),
+            )
+            domain_id = self.rpa.current_domain.domain_id
+            handle = self.security_controller.create(domain_id, config)
+            self.state.set_reg(1, handle)
+
+        elif subop == SECDOMAIN_DESTROY:
+            # sysop secdomain, destroy, Rn
+            handle = self.state.get_reg(rn) if rn else arg1
+            success = self.security_controller.destroy(handle)
+            self.state.set_reg(rd, 1 if success else 0)
+
+        elif subop == SECDOMAIN_FORCE_DESTROY:
+            # sysop secdomain, force_destroy, Rn
+            # 仅 root 域可用
+            handle = self.state.get_reg(rn) if rn else arg1
+            if self.rpa.current_domain.domain_id == 0:
+                success = self.security_controller.destroy_force(handle)
+                self.state.set_reg(rd, 1 if success else 0)
+            else:
+                self.state.set_reg(rd, 0)  # 非根域无法强制销毁
+
+        elif subop == SECDOMAIN_BIND:
+            # sysop secdomain, bind, Rn, R1
+            # Rn = handle, R1 = domain_id
+            handle = self.state.get_reg(rn) if rn else arg1
+            domain_id = self.state.get_reg(1)
+            success = self.security_controller.bind_domain(handle, domain_id)
+            self.state.set_reg(rd, 1 if success else 0)
+
+        elif subop == SECDOMAIN_UNBIND:
+            # sysop secdomain, unbind, Rn, R1
+            # Rn = handle, R1 = domain_id
+            handle = self.state.get_reg(rn) if rn else arg1
+            domain_id = self.state.get_reg(1)
+            success = self.security_controller.unbind_domain(handle, domain_id)
+            self.state.set_reg(rd, 1 if success else 0)
+
+        elif subop == SECDOMAIN_GET_ID:
+            # sysop secdomain, get_id, Rn, Rd
+            # Rn = handle, Rd = 返回 domain_id
+            handle = self.state.get_reg(rn) if rn else arg1
+            domain_id = self.security_controller.allocate_domain_id(handle)
+            self.state.set_reg(rd, domain_id)
+
+        elif subop == SECDOMAIN_SET_ENCRYPTION:
+            # sysop secdomain, set_encryption, Rn, R1
+            # Rn = handle, R1 = (start << 16) | size (高 16 位为起始地址低 16 位，低 16 位为大小)
+            # 注意：简化版本，实际应使用两个寄存器
+            handle = self.state.get_reg(rn) if rn else arg1
+            params = self.state.get_reg(1)
+            start = (params >> 16) & 0xFFFF
+            start <<= 12  # 页对齐
+            size = (params & 0xFFFF)
+            size <<= 12  # 页对齐
+            success = self.security_controller.set_encryption(handle, start, size)
+            self.state.set_reg(rd, 1 if success else 0)
+
+        elif subop == SECDOMAIN_ADD_ACCESSOR:
+            # sysop secdomain, add_accessor, Rn, R1
+            # Rn = handle, R1 = accessor_domain_id
+            handle = self.state.get_reg(rn) if rn else arg1
+            accessor_id = self.state.get_reg(1)
+            success = self.security_controller.add_dma_accessor(handle, accessor_id)
+            self.state.set_reg(rd, 1 if success else 0)
+
+        elif subop == SECDOMAIN_REMOVE_ACCESSOR:
+            # sysop secdomain, remove_accessor, Rn, R1
+            # Rn = handle, R1 = accessor_domain_id
+            handle = self.state.get_reg(rn) if rn else arg1
+            accessor_id = self.state.get_reg(1)
+            success = self.security_controller.remove_dma_accessor(handle, accessor_id)
+            self.state.set_reg(rd, 1 if success else 0)
+
+        elif subop == SECDOMAIN_GET_HANDLE:
+            # sysop secdomain, get_handle, R0, Rd
+            # R0 = domain_id, Rd = 返回 handle
+            domain_id = self.state.get_reg(0)
+            handle = self.security_controller.get_domain_security_handle(domain_id)
+            self.state.set_reg(rd, handle)
 
     def _check_interrupt(self) -> None:
         """检查并处理中断"""

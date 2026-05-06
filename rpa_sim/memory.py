@@ -26,9 +26,12 @@ Memory Manager - Physical memory and page table simulation
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set, TYPE_CHECKING
 from enum import Enum, auto
 import struct
+
+if TYPE_CHECKING:
+    from .security_domain import SecurityDomainController
 
 
 @dataclass
@@ -66,6 +69,24 @@ class PermissionError(Exception):
         self.access_type = access_type  # 'read', 'write', 'execute'
         self.reason = reason
         super().__init__(f"Permission error: VA=0x{va:#x}, owner={owner_domain}, {access_type}: {reason}")
+
+
+@dataclass
+class EncryptedRegion:
+    """加密内存区域"""
+    start: int              # 起始地址
+    size: int               # 大小
+    security_handle: int    # 所属安全域 handle
+    key: int                # 加密密钥
+
+    def encrypt(self, data: bytes) -> bytes:
+        """加密数据（XOR 模拟）"""
+        key_bytes = self.key.to_bytes(8, 'little')
+        return bytes(b ^ key_bytes[i % 8] for i, b in enumerate(data))
+
+    def decrypt(self, data: bytes) -> bytes:
+        """解密数据（XOR 模拟，对称）"""
+        return self.encrypt(data)
 
 
 @dataclass
@@ -188,6 +209,7 @@ class Memory:
     - 字节、半字（16位）、字（32位）读写
     - 内存区域权限设置
     - 地址边界检查
+    - 加密内存区域
 
     无页表时 PA = VA。
     """
@@ -208,6 +230,89 @@ class Memory:
         # 访问记录（用于测试验证）
         self.access_log: List[Dict] = []
 
+        # 加密区域：{start: EncryptedRegion}
+        self.encrypted_regions: Dict[int, 'EncryptedRegion'] = {}
+
+    def set_encryption(self, start: int, size: int, security_handle: int, key: int) -> None:
+        """
+        设置内存区域加密。
+
+        Args:
+            start: 起始地址
+            size: 区域大小
+            security_handle: 安全域 handle
+            key: 加密密钥
+        """
+        region = EncryptedRegion(
+            start=start,
+            size=size,
+            security_handle=security_handle,
+            key=key
+        )
+        self.encrypted_regions[start] = region
+
+    def clear_encryption(self, start: int) -> bool:
+        """
+        清除加密区域。
+
+        Args:
+            start: 起始地址
+
+        Returns:
+            是否成功
+        """
+        if start in self.encrypted_regions:
+            del self.encrypted_regions[start]
+            return True
+        return False
+
+    def clear_encryption_by_handle(self, security_handle: int) -> int:
+        """
+        清除指定安全域的所有加密区域。
+
+        Args:
+            security_handle: 安全域 handle
+
+        Returns:
+            清除的区域数量
+        """
+        to_remove = [
+            start for start, region in self.encrypted_regions.items()
+            if region.security_handle == security_handle
+        ]
+        for start in to_remove:
+            del self.encrypted_regions[start]
+        return len(to_remove)
+
+    def get_encryption_region(self, addr: int) -> Optional['EncryptedRegion']:
+        """
+        获取地址所属的加密区域。
+
+        Args:
+            addr: 地址
+
+        Returns:
+            加密区域，如果不在加密区域返回 None
+        """
+        for region in self.encrypted_regions.values():
+            if region.start <= addr < region.start + region.size:
+                return region
+        return None
+
+    def _encrypt_if_needed(self, addr: int, data: bytes) -> bytes:
+        """如果需要则加密数据"""
+        region = self.get_encryption_region(addr)
+        if region:
+            return region.encrypt(data)
+        return data
+
+    def _decrypt_if_needed(self, addr: int, data: bytes) -> bytes:
+        """如果需要则解密数据"""
+        region = self.get_encryption_region(addr)
+        if region:
+            return region.decrypt(data)
+        return data
+
     def _check_bounds(self, addr: int, size: int) -> None:
         """检查地址边界"""
         if addr < 0 or addr + size > self.size:
@@ -216,70 +321,91 @@ class Memory:
                 f"但内存范围是 0x0-0x{self.size:#x}"
             )
 
-    def read_byte(self, addr: int) -> int:
+    def read_byte(self, addr: int, decrypt: bool = True) -> int:
         """读取单字节"""
         self._check_bounds(addr, 1)
         value = self.memory[addr]
+        if decrypt:
+            value = self._decrypt_if_needed(addr, bytes([value]))[0]
         self.access_log.append({
             "type": "read", "addr": addr, "size": 1, "value": value
         })
         return value
 
-    def write_byte(self, addr: int, value: int) -> None:
+    def write_byte(self, addr: int, value: int, encrypt: bool = True) -> None:
         """写入单字节"""
         self._check_bounds(addr, 1)
+        if encrypt:
+            value = self._encrypt_if_needed(addr, bytes([value & 0xFF]))[0]
         self.memory[addr] = value & 0xFF
         self.access_log.append({
             "type": "write", "addr": addr, "size": 1, "value": value
         })
 
-    def read_halfword(self, addr: int) -> int:
+    def read_halfword(self, addr: int, decrypt: bool = True) -> int:
         """读取半字（16位），小端序"""
         self._check_bounds(addr, 2)
-        value = struct.unpack('<H', self.memory[addr:addr+2])[0]
+        data = self.memory[addr:addr+2]
+        if decrypt:
+            data = self._decrypt_if_needed(addr, data)
+        value = struct.unpack('<H', data)[0]
         self.access_log.append({
             "type": "read", "addr": addr, "size": 2, "value": value
         })
         return value
 
-    def write_halfword(self, addr: int, value: int) -> None:
+    def write_halfword(self, addr: int, value: int, encrypt: bool = True) -> None:
         """写入半字（16位），小端序"""
         self._check_bounds(addr, 2)
-        self.memory[addr:addr+2] = struct.pack('<H', value & 0xFFFF)
+        data = struct.pack('<H', value & 0xFFFF)
+        if encrypt:
+            data = self._encrypt_if_needed(addr, data)
+        self.memory[addr:addr+2] = data
         self.access_log.append({
             "type": "write", "addr": addr, "size": 2, "value": value
         })
 
-    def read_word(self, addr: int) -> int:
+    def read_word(self, addr: int, decrypt: bool = True) -> int:
         """读取字（32位），小端序"""
         self._check_bounds(addr, 4)
-        value = struct.unpack('<I', self.memory[addr:addr+4])[0]
+        data = self.memory[addr:addr+4]
+        if decrypt:
+            data = self._decrypt_if_needed(addr, data)
+        value = struct.unpack('<I', data)[0]
         self.access_log.append({
             "type": "read", "addr": addr, "size": 4, "value": value
         })
         return value
 
-    def write_word(self, addr: int, value: int) -> None:
+    def write_word(self, addr: int, value: int, encrypt: bool = True) -> None:
         """写入字（32位），小端序"""
         self._check_bounds(addr, 4)
-        self.memory[addr:addr+4] = struct.pack('<I', value & 0xFFFFFFFF)
+        data = struct.pack('<I', value & 0xFFFFFFFF)
+        if encrypt:
+            data = self._encrypt_if_needed(addr, data)
+        self.memory[addr:addr+4] = data
         self.access_log.append({
             "type": "write", "addr": addr, "size": 4, "value": value
         })
 
-    def read_bytes(self, addr: int, size: int) -> bytes:
+    def read_bytes(self, addr: int, size: int, decrypt: bool = True) -> bytes:
         """读取多字节"""
         self._check_bounds(addr, size)
         data = bytes(self.memory[addr:addr+size])
+        if decrypt:
+            data = self._decrypt_if_needed(addr, data)
         self.access_log.append({
             "type": "read", "addr": addr, "size": size, "value": data
         })
         return data
 
-    def write_bytes(self, addr: int, data: bytes) -> None:
+    def write_bytes(self, addr: int, data: bytes, encrypt: bool = True) -> None:
         """写入多字节"""
         self._check_bounds(addr, len(data))
-        self.memory[addr:addr+len(data)] = data
+        write_data = data
+        if encrypt:
+            write_data = self._encrypt_if_needed(addr, data)
+        self.memory[addr:addr+len(data)] = write_data
         self.access_log.append({
             "type": "write", "addr": addr, "size": len(data), "value": data
         })
@@ -399,6 +525,53 @@ class MemoryManager:
         self.physical_memory = physical_memory or Memory(1024 * 1024)
         # memtable_addr -> PageTable
         self.page_tables: Dict[int, PageTable] = {}
+
+        # 安全域控制器引用
+        self.security_controller: Optional['SecurityDomainController'] = None
+
+        # 页表到安全域的映射: memtable_addr -> security_handle
+        self.page_table_security: Dict[int, int] = {}
+
+    def set_security_controller(self, controller: 'SecurityDomainController') -> None:
+        """设置安全域控制器"""
+        self.security_controller = controller
+        # 同时设置到物理内存
+        if controller:
+            controller.memory_manager = self
+
+    def bind_page_table_to_security(self, memtable_addr: int, security_handle: int) -> None:
+        """
+        将页表绑定到安全域。
+
+        Args:
+            memtable_addr: 页表基址
+            security_handle: 安全域 handle
+        """
+        self.page_table_security[memtable_addr] = security_handle
+
+    def set_encryption(self, start: int, size: int, security_handle: int, key: int) -> None:
+        """
+        设置加密区域。
+
+        Args:
+            start: 起始地址
+            size: 区域大小
+            security_handle: 安全域 handle
+            key: 加密密钥
+        """
+        self.physical_memory.set_encryption(start, size, security_handle, key)
+
+    def clear_encryption_by_handle(self, security_handle: int) -> int:
+        """
+        清除指定安全域的所有加密区域。
+
+        Args:
+            security_handle: 安全域 handle
+
+        Returns:
+            清除的区域数量
+        """
+        return self.physical_memory.clear_encryption_by_handle(security_handle)
 
     def create_page_table(self, base_addr: int, page_size: int = 4096,
                           owner_domain: int = 0) -> PageTable:
