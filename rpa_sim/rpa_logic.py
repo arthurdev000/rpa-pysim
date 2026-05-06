@@ -379,20 +379,16 @@ class RPALogic:
             domain_id = self._next_domain_id
             self._next_domain_id += 1
 
-        # 写入 domain_id 到控制块
+        # 更新 Python 对象
         block.domain_id = domain_id
+        block.parent_block = self.current_domain.block_addr
+        self.current_domain.block.child_block = block_addr
+
+        # 写入内存
         if self.memory:
             self.memory.write_word(block_addr + OFFSET_DOMAIN_ID, domain_id)
-
-        # 写入 parent_block 到控制块
-        block.parent_block = self.current_domain.block_addr
-        if self.memory:
             self.memory.write_word(block_addr + OFFSET_PARENT_BLOCK, self.current_domain.block_addr)
-
-        # 更新父域的 child_block（标记已创建子域）
-        if self.memory:
             self.memory.write_word(self.current_domain.block_addr + OFFSET_CHILD_BLOCK, block_addr)
-        self.current_domain.block.child_block = block_addr
 
         # 创建新域对象（用于错误归属）
         new_domain = Domain(
@@ -440,20 +436,16 @@ class RPALogic:
 
         if release:
             # EXIT 语义：清空父子关系
-            # 清空父域的 child_block
+            # 更新 Python 对象
+            parent.block.child_block = 0
+            self.current_domain.block.parent_block = 0
+            self.current_domain.block.domain_id = 0
+
+            # 写入内存
             if self.memory:
                 self.memory.write_word(parent.block_addr + OFFSET_CHILD_BLOCK, 0)
-            parent.block.child_block = 0
-
-            # 清空子域的 parent_block
-            if self.memory:
                 self.memory.write_word(child_block_addr + OFFSET_PARENT_BLOCK, 0)
-            self.current_domain.block.parent_block = 0
-
-            # 清空子域的 domain_id（便于调试）
-            if self.memory:
                 self.memory.write_word(child_block_addr + OFFSET_DOMAIN_ID, 0)
-            self.current_domain.block.domain_id = 0
 
             # 从注册表移除子域
             if child_block_addr in self._domain_registry:
