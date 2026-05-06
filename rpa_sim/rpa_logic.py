@@ -416,7 +416,7 @@ class RPALogic:
             "is_first": True,  # 标记为首次
         }
 
-    def escalate(self, service_type: int) -> Any:
+    def escalate(self, service_type: int, release: bool = False) -> Any:
         """
         请求父域服务
 
@@ -425,16 +425,39 @@ class RPALogic:
         2. 返回 exception_vector
 
         寄存器保存由 ISA 负责（complete_escalate）
+
+        Args:
+            service_type: 服务类型
+            release: 是否释放子域（EXIT 语义）
         """
         if self.current_domain.parent is None:
             raise RuntimeError("Cannot escalate from root domain")
 
         parent = self.current_domain.parent
+        child_block_addr = self.current_domain.block_addr
 
         self.stats["escalate_count"] += 1
 
-        # 保存当前（子域）的 block_addr，供父域 RETURN 时使用
-        child_block_addr = self.current_domain.block_addr
+        if release:
+            # EXIT 语义：清空父子关系
+            # 清空父域的 child_block
+            if self.memory:
+                self.memory.write_word(parent.block_addr + OFFSET_CHILD_BLOCK, 0)
+            parent.block.child_block = 0
+
+            # 清空子域的 parent_block
+            if self.memory:
+                self.memory.write_word(child_block_addr + OFFSET_PARENT_BLOCK, 0)
+            self.current_domain.block.parent_block = 0
+
+            # 清空子域的 domain_id（便于调试）
+            if self.memory:
+                self.memory.write_word(child_block_addr + OFFSET_DOMAIN_ID, 0)
+            self.current_domain.block.domain_id = 0
+
+            # 从注册表移除子域
+            if child_block_addr in self._domain_registry:
+                del self._domain_registry[child_block_addr]
 
         # 切换到父域
         self.current_domain = parent
@@ -442,56 +465,8 @@ class RPALogic:
         return {
             "vector": parent.block.exception_vector,
             "domain_id": parent.domain_id,
-            "child_block_addr": child_block_addr,  # 返回子域的 block 地址
-        }
-
-    def exit_domain(self, service_type: int) -> Any:
-        """
-        退出子域并释放资源
-
-        与 ESCALATE 类似，但会清空父子关系：
-        1. 清空父域的 child_block
-        2. 清空子域的 parent_block
-        3. 从注册表中移除子域
-        4. 切换到父域
-
-        此后子域控制块可被重新使用（重新 DESCEND）。
-        """
-        if self.current_domain.parent is None:
-            raise RuntimeError("Cannot exit from root domain")
-
-        parent = self.current_domain.parent
-        child_block_addr = self.current_domain.block_addr
-
-        self.stats["escalate_count"] += 1
-
-        # 清空父域的 child_block
-        if self.memory:
-            self.memory.write_word(parent.block_addr + OFFSET_CHILD_BLOCK, 0)
-        parent.block.child_block = 0
-
-        # 清空子域的 parent_block
-        if self.memory:
-            self.memory.write_word(child_block_addr + OFFSET_PARENT_BLOCK, 0)
-        self.current_domain.block.parent_block = 0
-
-        # 清空子域的 domain_id（可选，便于调试）
-        if self.memory:
-            self.memory.write_word(child_block_addr + OFFSET_DOMAIN_ID, 0)
-        self.current_domain.block.domain_id = 0
-
-        # 从注册表移除子域
-        if child_block_addr in self._domain_registry:
-            del self._domain_registry[child_block_addr]
-
-        # 切换到父域
-        self.current_domain = parent
-
-        return {
-            "vector": parent.block.exception_vector,
-            "domain_id": parent.domain_id,
-            "child_block_addr": 0,  # 子域已释放，不再有有效地址
-            "released": True,  # 标记已释放
+            "child_block_addr": 0 if release else child_block_addr,
+            "released": release,
         }
 
     def fault(self, fault_type: str, address: int = 0) -> None:
