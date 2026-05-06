@@ -27,14 +27,13 @@ RPA 指令：DESCEND, ESCALATE, RETURN, SYSOP
 - r15 (PC): 程序计数器
 
 上下文保存策略:
-- 最小方案: 只保存 SP 和 LR (8 字节)
-- 上下文保存在 DomainBlock 扩展区域 (ctrlblock_size > 32)
-- r0-r3 不保存，避免覆盖返回值
+- ESCALATE/RETURN: 保存 SP, LR, PSR (12 字节)
+- 中断: 保存所有寄存器 R0-R15 + PSR (68 字节)
 
 DomainBlock 扩展区域 (ISA 上下文保存):
-- 0x20-0x23: saved_sp   (ISA 保存的栈指针)
-- 0x24-0x27: saved_lr   (ISA 保存的链接寄存器)
-- 0x28-0x3F: reserved   (保留)
+- 0x20-0x2B: ESCALATE 现场保存 (SP, LR, PSR)
+- 0x2C-0x3F: 保留
+- 0x40-0x83: 中断现场保存 (R0-R15 + PSR)
 
 地址翻译:
 ============
@@ -49,6 +48,15 @@ DomainBlock 扩展区域 (ISA 上下文保存):
 
     memtable_chain = [domain_n.memtable, ..., domain_0.memtable]
     翻译失败 → TranslationError(memtable_owner)
+
+中断处理:
+============
+
+    每条指令执行后检查中断:
+    1. 查询 InterruptController.check_interrupt()
+    2. 找到最高优先级的待处理中断
+    3. 检查 I-bit
+    4. 如果需要处理 → 保存所有寄存器 → 跳转到 vector
 """
 
 from dataclasses import dataclass, field
@@ -63,6 +71,26 @@ SAVED_SP_OFFSET = 0x20    # ISA 保存的栈指针
 SAVED_LR_OFFSET = 0x24    # ISA 保存的链接寄存器（返回地址）
 SAVED_PSR_OFFSET = 0x28   # ISA 保存的程序状态寄存器 (N, Z, C, V)
 # 0x2C-0x3F 保留
+
+# 中断现场保存区域偏移 (从 0x40 开始)
+IRQ_SAVE_R0 = 0x40
+IRQ_SAVE_R1 = 0x44
+IRQ_SAVE_R2 = 0x48
+IRQ_SAVE_R3 = 0x4C
+IRQ_SAVE_R4 = 0x50
+IRQ_SAVE_R5 = 0x54
+IRQ_SAVE_R6 = 0x58
+IRQ_SAVE_R7 = 0x5C
+IRQ_SAVE_R8 = 0x60
+IRQ_SAVE_R9 = 0x64
+IRQ_SAVE_R10 = 0x68
+IRQ_SAVE_R11 = 0x6C
+IRQ_SAVE_R12 = 0x70
+IRQ_SAVE_SP = 0x74
+IRQ_SAVE_LR = 0x78
+IRQ_SAVE_PC = 0x7C
+IRQ_SAVE_PSR = 0x80
+IRQ_SAVE_SIZE = 0x44  # 17 * 4 = 68 字节
 
 # 调用标准常量
 REG_ARG_START = 0         # r0 - 参数/返回值起始寄存器
@@ -131,6 +159,9 @@ class CPUState:
     z: bool = False
     c: bool = False
     v: bool = False
+    # 中断状态
+    irq_disabled: bool = False    # 全局中断禁用（执行中断处理程序时）
+    in_interrupt: bool = False    # 是否在中断处理中
 
     def get_reg(self, idx: int) -> int:
         return self.registers[idx]
@@ -173,6 +204,8 @@ class CPUState:
         self.z = False
         self.c = False
         self.v = False
+        self.irq_disabled = False
+        self.in_interrupt = False
 
 
 class Assembler:
@@ -373,7 +406,11 @@ class Assembler:
             subop_str = parts[1].upper()
 
             op_codes = {'IRQ': 0x01, 'MEMTABLE': 0x02}
-            subop_codes = {'READ': 0x01, 'WRITE': 0x02, 'ENABLE': 0x03, 'DISABLE': 0x04}
+            subop_codes = {
+                'READ': 0x01, 'WRITE': 0x02, 'ENABLE': 0x03, 'DISABLE': 0x04,
+                'SETVEC': 0x05, 'GETPENDING': 0x06, 'CLEAR': 0x07,
+                'REQUEST': 0x08, 'RELEASE': 0x09, 'SGI': 0x0A,
+            }
 
             op_code = op_codes.get(op_str, 0)
             subop_code = subop_codes.get(subop_str, 0)
@@ -415,9 +452,14 @@ class SimpleISA:
     - DESCEND: 读取 DomainBlock，跳转到 saved_lr (0x24)
     - ESCALATE: 保存上下文，切换到父域
     - RETURN: 从控制块恢复上下文
+
+    中断处理:
+    - 每条指令执行后检查中断
+    - 通过 InterruptController 查询待处理中断
+    - 保存所有寄存器到中断现场保存区
     """
 
-    def __init__(self, rpa, memory=None, memory_manager=None):
+    def __init__(self, rpa, memory=None, memory_manager=None, interrupt_controller=None):
         """
         初始化核心。
 
@@ -425,11 +467,13 @@ class SimpleISA:
             rpa: RPALogic 实例（管理域状态）
             memory: Memory 实例（物理内存）
             memory_manager: MemoryManager 实例（带翻译的读写）
+            interrupt_controller: InterruptController 实例（中断管理）
         """
         self.state = CPUState()
         self.rpa = rpa
         self.memory = memory
         self.memory_manager = memory_manager
+        self.interrupt_controller = interrupt_controller
 
         # 当前 Domain 的 memtable 翻译链
         # [domain_n.memtable, ..., domain_0.memtable]
@@ -498,6 +542,9 @@ class SimpleISA:
 
         if self.state.pc == pc and not self.halted:
             self.state.pc = pc + 4
+
+        # 检查中断
+        self._check_interrupt()
 
         return not self.halted
 
@@ -697,10 +744,149 @@ class SimpleISA:
         arg1 = (inst.imm >> 8) & 0xFF
         arg2 = inst.imm & 0xFF
 
+        # IRQ 操作（仅当有 interrupt_controller 时处理）
+        if op == 0x01 and self.interrupt_controller:
+            self._execute_sysop_irq(subop, arg1, arg2, inst.rd, inst.rn)
+            return
+
+        # 其他操作使用自定义 handler
         if self.sysop_handler:
             result = self.sysop_handler(op, subop, arg1, arg2, inst.rd, inst.rn)
             if result is not None:
                 self.state.set_reg(inst.rd, result)
+
+    def _execute_sysop_irq(self, subop: int, arg1: int, arg2: int, rd: int, rn: int) -> None:
+        """执行 sysop irq 指令"""
+        if not self.interrupt_controller:
+            return
+
+        from .interrupt import IrqSubOp
+
+        if subop == IrqSubOp.REQUEST:
+            # sysop irq, request, R0, R1  (R0=perms, R1=返回handle)
+            # 需要父域调用，简化处理：使用当前域 ID
+            permissions = self.state.get_reg(0)
+            domain_id = self.rpa.current_domain.domain_id
+            handle = self.interrupt_controller.request(domain_id, permissions)
+            self.state.set_reg(1, handle)
+
+        elif subop == IrqSubOp.RELEASE:
+            # sysop irq, release, Rn
+            handle = self.state.get_reg(rn) if rn else arg1
+            self.interrupt_controller.release(handle)
+
+        elif subop == IrqSubOp.ENABLE:
+            # sysop irq, enable, Rn  (Rn = handle)
+            handle = self.state.get_reg(rn) if rn else arg1
+            self.interrupt_controller.enable(handle)
+
+        elif subop == IrqSubOp.DISABLE:
+            # sysop irq, disable, Rn
+            handle = self.state.get_reg(rn) if rn else arg1
+            self.interrupt_controller.disable(handle)
+
+        elif subop == IrqSubOp.SETVEC:
+            # sysop irq, setvec, Rn, #vector
+            handle = self.state.get_reg(rn) if rn else arg1
+            vector = arg2
+            self.interrupt_controller.set_vector(handle, vector)
+
+        elif subop == IrqSubOp.GETPENDING:
+            # sysop irq, getpending, Rn, Rd
+            handle = self.state.get_reg(rn) if rn else arg1
+            pending = self.interrupt_controller.get_pending(handle)
+            self.state.set_reg(rd, pending)
+
+        elif subop == IrqSubOp.CLEAR:
+            # sysop irq, clear, Rn, #N
+            handle = self.state.get_reg(rn) if rn else arg1
+            irq_num = arg2
+            self.interrupt_controller.clear_pending(handle, irq_num)
+
+        elif subop == IrqSubOp.SGI:
+            # sysop irq, sgi, Rn, #N  (Rn=target_handle, N=irq_num)
+            target_handle = self.state.get_reg(rn) if rn else arg1
+            irq_num = arg2
+            # 需要当前域的 handle
+            current_handle = self.rpa.current_domain.block.interrupt_ctrl
+            if current_handle:
+                self.interrupt_controller.sgi(current_handle, target_handle, irq_num)
+
+    def _check_interrupt(self) -> None:
+        """检查并处理中断"""
+        if not self.interrupt_controller:
+            return
+
+        # 全局中断禁用时不检查
+        if self.state.irq_disabled:
+            return
+
+        # 检查是否有待处理的中断
+        current_domain_id = self.rpa.current_domain.domain_id
+        result = self.interrupt_controller.check_interrupt(current_domain_id, {})
+
+        if result:
+            handle, vector = result
+            if vector:
+                # 保存中断现场
+                self._save_irq_context()
+                # 标记中断状态
+                self.state.irq_disabled = True
+                self.state.in_interrupt = True
+                # 跳转到中断向量
+                self.state.pc = vector
+
+    def _save_irq_context(self) -> None:
+        """保存中断现场到 DomainBlock（所有寄存器）"""
+        if not self.memory:
+            return
+
+        block_addr = self.domain_block_addr
+
+        # 保存 R0-R12
+        for i in range(13):
+            offset = IRQ_SAVE_R0 + i * 4
+            self.memory.write_word(block_addr + offset, self.state.registers[i])
+
+        # 保存 SP, LR, PC
+        self.memory.write_word(block_addr + IRQ_SAVE_SP, self.state.sp)
+        self.memory.write_word(block_addr + IRQ_SAVE_LR, self.state.lr)
+        self.memory.write_word(block_addr + IRQ_SAVE_PC, self.state.pc)
+
+        # 保存 PSR
+        psr = (self.state.n << 3) | (self.state.z << 2) | (self.state.c << 1) | self.state.v
+        self.memory.write_word(block_addr + IRQ_SAVE_PSR, psr)
+
+    def _restore_irq_context(self) -> None:
+        """从中断现场恢复所有寄存器"""
+        if not self.memory:
+            return
+
+        block_addr = self.domain_block_addr
+
+        # 恢复 R0-R12
+        for i in range(13):
+            offset = IRQ_SAVE_R0 + i * 4
+            self.state.registers[i] = self.memory.read_word(block_addr + offset)
+
+        # 恢复 SP, LR
+        self.state.sp = self.memory.read_word(block_addr + IRQ_SAVE_SP)
+        self.state.lr = self.memory.read_word(block_addr + IRQ_SAVE_LR)
+
+        # PC 由返回指令设置
+        saved_pc = self.memory.read_word(block_addr + IRQ_SAVE_PC)
+        self.state.pc = saved_pc
+
+        # 恢复 PSR
+        psr = self.memory.read_word(block_addr + IRQ_SAVE_PSR)
+        self.state.n = bool(psr & 0x08)
+        self.state.z = bool(psr & 0x04)
+        self.state.c = bool(psr & 0x02)
+        self.state.v = bool(psr & 0x01)
+
+        # 清除中断状态
+        self.state.irq_disabled = False
+        self.state.in_interrupt = False
 
     def _execute_descend(self, inst: Instruction) -> None:
         """

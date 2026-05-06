@@ -37,8 +37,8 @@
 |------|------|------|
 | 0x00 | ctrlblock_size | 控制块大小（必须为32的倍数，DESCEND时验证） |
 | 0x04 | exception_vector | 异常向量（ESCALATE/故障跳转地址） |
-| 0x08 | interrupt_vector | 中断向量 |
-| 0x0C | interrupt_ctrl | 中断控制器 |
+| 0x08 | reserved_08 | 保留（原 interrupt_vector） |
+| 0x0C | interrupt_ctrl | 中断控制器 handle |
 | 0x10 | memtable_address | 内存翻译表地址 |
 | 0x14 | domain_id | 域ID（系统分配，调试用） |
 | 0x18 | parent_block | 父域控制块地址（系统写入） |
@@ -51,6 +51,20 @@
 | 0x20 | saved_sp | ISA 保存的栈指针 |
 | 0x24 | saved_lr | ISA 保存的返回地址（首次DESCEND父域写入入口，ESCALATE保存返回地址） |
 | 0x28 | saved_psr | ISA 保存的程序状态寄存器 |
+| 0x2C-0x3F | reserved | 保留 |
+
+### 中断现场保存区域 (偏移 0x40 起)
+
+| 偏移 | 字段 | 说明 |
+|------|------|------|
+| 0x40 | irq_saved_r0 | 中断保存 R0 |
+| 0x44 | irq_saved_r1 | 中断保存 R1 |
+| ... | ... | ... |
+| 0x70 | irq_saved_r12 | 中断保存 R12 |
+| 0x74 | irq_saved_sp | 中断保存 SP |
+| 0x78 | irq_saved_lr | 中断保存 LR |
+| 0x7C | irq_saved_pc | 中断保存 PC |
+| 0x80 | irq_saved_psr | 中断保存 PSR |
 
 ### DESCEND 执行流程
 
@@ -157,7 +171,83 @@
 
 详见 `docs/CONTROL_BLOCK_SPEC.md`
 
+## 安全域设计讨论
+
+### 概念区分
+
+- **安全 (Security)**: 访问控制、隔离、权限管理
+- **机密 (Confidential)**: 数据加密、密钥保护、防泄露
+
+### 通用安全设置
+
+1. **DESCEND 首次启动**
+   - 父域清空不用于传递参数的寄存器（当前默认操作：清空 r4-r12）
+
+2. **RETURN 返回子域**
+   - 清除已使用且未作为返回值使用的 a0-a3 (R0-R3) 的痕迹
+
+### 安全子系统架构
+
+**核心原则**: memory 模块与域不是一对一关系，类似 interrupt 模块
+
+**机密计算层设定**:
+- root 域或硬件配置层可指定哪一层是机密计算层
+- 当某层为子域设定机密计算层时，memory 模块比对 domain_id
+- 应用内存加密机制
+
+**domain_id 生成**:
+- 由内存子系统生成（支持安全子系统时）
+- 传入现有的 domain_id base，传出产生的值
+- 本质仍是 +1，但确保不与已有安全域 id 重复
+- root 域能够正确设计暗号机制
+
+### 安全域生命周期
+
+**创建**:
+- 子域可与父域在同一安全域内
+- 也可创建新的安全域
+- 由内存系统决定
+
+**销毁 (EXIT)**:
+- 触发内存子系统的安全域销毁方法
+- 彻底清零安全子域数据
+- 共享内存段不清除（父域本就可访问）
+
+**信息上报**:
+- 父域程序通过寄存器上报
+- 共享内存段传递数据
+
+### 机密计算域
+
+**加密机制**:
+- 对内存进行加密
+- 密钥由内建暗号机制确认
+- root 域知道哪一层是机密域，但无法设置密钥
+
+**DMA 访问控制**:
+- sysops 操作 memory mapped register 时需检查权限
+- DMA 等设备读取内存时比对 access id 或加解密密钥
+- DMA 需要知道密钥并自行解密，避免总线上出现明文数据
+
+### 待实现
+
+- [ ] memory 模块扩展支持安全域
+- [ ] domain_id 生成机制
+- [ ] 安全域创建/销毁接口
+- [ ] DMA 访问控制
+- [ ] 内存加密模拟
+
 ## 已完成
+
+### 2026-05-06: 中断控制器模块实现
+- 新增 `interrupt.py` 模块
+- `InterruptController`: 全局中断控制器
+- `InterruptInstance`: 中断实例（通过 handle 访问）
+- 权限控制: CONFIG, ENABLE, SGI
+- sysop irq 指令: request, release, enable, disable, setvec, getpending, clear, sgi
+- 中断现场保存区域 (0x40-0x83): R0-R15 + PSR
+- ISA 每条指令后检查中断
+- 从 DomainBlock 移除 `interrupt_vector`（改为保留字段）
 
 ### 2026-05-06: 代码清理
 - 移除 `RPACore` 向后兼容别名（统一使用 `RPALogic`）
