@@ -4,6 +4,7 @@ RPA Core Tests - Basic functionality tests
 
 import pytest
 from rpa_sim import RPALogic, Domain, DomainBlock, Memory, SimpleISA, MemoryManager, DomainBlockError
+from rpa_sim.isa_simple import SAVED_LR_OFFSET, SAVED_SP_OFFSET, SAVED_PSR_OFFSET
 
 
 class TestDomainBlock:
@@ -76,13 +77,13 @@ class TestRPALogic:
         child1_addr = 0x1000
         mem.write_word(child1_addr + 0x00, 32)  # ctrlblock_size
         mem.write_word(child1_addr + 0x10, 0)   # memtable_address
-        mem.write_word(child1_addr + 0x24, 0x2000)  # saved_lr
+        mem.write_word(child1_addr + SAVED_LR_OFFSET, 0x2000)  # saved_lr
 
         # 第二个子域控制块
         child2_addr = 0x2000
         mem.write_word(child2_addr + 0x00, 32)  # ctrlblock_size
         mem.write_word(child2_addr + 0x10, 0)   # memtable_address
-        mem.write_word(child2_addr + 0x24, 0x3000)  # saved_lr
+        mem.write_word(child2_addr + SAVED_LR_OFFSET, 0x3000)  # saved_lr
 
         # 首次 DESCEND 到 child1
         rpa.descend(child1_addr)
@@ -130,27 +131,30 @@ class TestSimpleISA:
 
     def test_descend_escalate(self):
         """Test DESCEND and ESCALATE instructions"""
+        from rpa_sim.isa_simple import SAVED_LR_OFFSET
         mem = Memory(size=64 * 1024)
 
         # 设置控制块 - 新布局
         # 0x00: ctrlblock_size
         # 0x04: exception_vector
-        # 0x08: interrupt_vector
+        # 0x08: reserved
         # 0x0C: interrupt_ctrl
         # 0x10: memtable_address
         # 0x14: domain_id
-        # 0x18: parent_block
+        # 0x18: reserved (原 parent_block)
         # 0x1C: child_block
+        # 0x20: security_domain
+        # 0x24: access_id
         # ISA 扩展:
-        # 0x20: saved_sp
-        # 0x24: saved_lr (首次 DESCEND 入口地址由父域写入)
-        # 0x28: saved_psr
+        # 0x28: saved_sp
+        # 0x2C: saved_lr (首次 DESCEND 入口地址由父域写入)
+        # 0x30: saved_psr
         block_addr = 0x0800
         child_entry = 0x2000
         mem.write_word(block_addr + 0x00, 32)               # ctrlblock_size = 32
         mem.write_word(block_addr + 0x04, 0)                # exception_vector (子域自己用的)
         mem.write_word(block_addr + 0x10, 0)                # memtable_address
-        mem.write_word(block_addr + 0x24, child_entry)      # saved_lr = 入口地址 (父域设置)
+        mem.write_word(block_addr + SAVED_LR_OFFSET, child_entry)      # saved_lr = 入口地址 (父域设置)
 
         rpa = RPALogic()
         rpa.memory = mem
@@ -347,7 +351,7 @@ class TestIntegration:
         mem.write_word(block_addr + 0x00, 32)                    # ctrlblock_size
         mem.write_word(block_addr + 0x04, 0)                     # exception_vector (子域自己的)
         mem.write_word(block_addr + 0x10, 0)                     # memtable_address
-        mem.write_word(block_addr + 0x24, child_entry)           # saved_lr = 入口地址 (父域设置)
+        mem.write_word(block_addr + SAVED_LR_OFFSET, child_entry)           # saved_lr = 入口地址 (父域设置)
 
         # 设置父域的 exception_vector
         rpa.root_domain.block.exception_vector = parent_exception_handler
@@ -414,7 +418,7 @@ class TestExitInstruction:
         mem.write_word(block_addr + 0x00, 32)               # ctrlblock_size
         mem.write_word(block_addr + 0x04, 0)                # exception_vector
         mem.write_word(block_addr + 0x10, 0)                # memtable_address
-        mem.write_word(block_addr + 0x24, child_entry)      # saved_lr
+        mem.write_word(block_addr + SAVED_LR_OFFSET, child_entry)      # saved_lr
 
         core = SimpleISA(rpa=rpa, memory=mem)
         rpa.root_domain.block.exception_vector = 0x3000
@@ -452,8 +456,6 @@ class TestExitInstruction:
         assert rpa.get_depth() == 0
         # 验证父域的 child_block 被清空
         assert rpa.root_domain.block.child_block == 0
-        # 验证子域的 parent_block 被清空
-        assert mem.read_word(block_addr + 0x18) == 0  # parent_block
         # 验证子域的 domain_id 被清空
         assert mem.read_word(block_addr + 0x14) == 0  # domain_id
 
@@ -475,11 +477,11 @@ class TestExitInstruction:
         core = SimpleISA(rpa=rpa, memory=mem)
         rpa.root_domain.block.exception_vector = 0x3000
 
-        # 父域代码
+        # 父域代码 - 写入 saved_lr (0x2C) 后 DESCEND
         core.load_assembly("""
             MOV R0, #0x0800
             MOV R1, #0x2000
-            STR R1, [R0, #0x24]  ; saved_lr = 入口地址
+            STR R1, [R0, #0x2C]  ; saved_lr = 入口地址
             DESCEND R0
             HALT
         """, base_addr=0x1000)
@@ -507,7 +509,7 @@ class TestExitInstruction:
 
         # 现在可以重新 DESCEND 到同一个控制块
         # 重置入口地址
-        mem.write_word(block_addr + 0x24, child_entry)
+        mem.write_word(block_addr + SAVED_LR_OFFSET, child_entry)
 
         result = rpa.descend(block_addr)
         assert result["is_first"] == True  # 应该是首次 DESCEND（因为之前 EXIT 释放了）
@@ -527,7 +529,7 @@ class TestExitInstruction:
         mem.write_word(block_addr1 + 0x00, 32)
         mem.write_word(block_addr1 + 0x04, 0)
         mem.write_word(block_addr1 + 0x10, 0)
-        mem.write_word(block_addr1 + 0x24, child_entry1)
+        mem.write_word(block_addr1 + SAVED_LR_OFFSET, child_entry1)
 
         rpa1 = RPALogic()
         rpa1.memory = mem
@@ -572,7 +574,7 @@ class TestExitInstruction:
         mem2.write_word(block_addr2 + 0x00, 32)
         mem2.write_word(block_addr2 + 0x04, 0)
         mem2.write_word(block_addr2 + 0x10, 0)
-        mem2.write_word(block_addr2 + 0x24, child_entry2)
+        mem2.write_word(block_addr2 + SAVED_LR_OFFSET, child_entry2)
 
         rpa2 = RPALogic()
         rpa2.memory = mem2
