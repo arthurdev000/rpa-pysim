@@ -42,8 +42,8 @@ rpa.memory = mem
 block_addr = 0x1000
 mem.write_word(block_addr + 0x00, 32)      # ctrlblock_size
 mem.write_word(block_addr + 0x04, 0x3000)  # exception_vector
-mem.write_word(block_addr + 0x10, 0)       # memtable_address
-mem.write_word(block_addr + 0x24, 0x2000)  # saved_lr (入口地址)
+mem.write_word(block_addr + 0x10, 0)       # ipa_regions
+mem.write_word(block_addr + 0x2C, 0x2000)  # saved_lr (入口地址)
 
 # 创建ISA核心并执行
 core = SimpleISA(rpa=rpa, memory=mem)
@@ -68,9 +68,9 @@ core.run()
 | 0x04 | exception_vector | 异常向量 |
 | 0x08 | reserved_08 | 保留 |
 | 0x0C | interrupt_ctrl | 中断控制器 |
-| 0x10 | memtable_address | 内存翻译表地址 |
+| 0x10 | ipa_regions | IPA 区域表地址（父域设置，子域只读） |
 | 0x14 | domain_id | 域ID（系统分配） |
-| 0x18 | reserved_18 | 保留（原 parent_block） |
+| 0x18 | pagetable | 页表地址（子域设置，子域可写） |
 | 0x1C | child_block | 子域控制块地址（父域维护） |
 | 0x20 | security_domain | 安全域 handle |
 | 0x24 | access_id | 访问 ID (DMA 用) |

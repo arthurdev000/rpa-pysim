@@ -72,18 +72,18 @@ class Machine:
         创建页表
 
         Args:
-            base_addr: 页表基址 (memtable_address)
+            base_addr: 页表基址 (pagetable)
             owner_domain: 页表所属的域 ID（异常归属）
         """
         return self.mm.create_page_table(base_addr, owner_domain=owner_domain)
 
-    def get_memtable_chain(self) -> List[int]:
+    def get_pagetable_chain(self) -> List[int]:
         """
-        获取当前 Domain 的 memtable 翻译链
+        获取当前 Domain 的页表翻译链
 
-        返回: [domain_n.memtable, ..., domain_0.memtable]
+        返回: [domain_n.pagetable, ..., domain_0.pagetable]
         """
-        return self.rpa.get_memtable_chain()
+        return self.rpa.get_pagetable_chain()
 
     def descend(self, block_addr: int) -> Any:
         """进入子域"""
@@ -121,7 +121,7 @@ class Machine:
 
     def read_memory_va(self, va: int, size: int = 4) -> int:
         """通过虚拟地址读取内存"""
-        chain = self.get_memtable_chain()
+        chain = self.get_pagetable_chain()
         if chain:
             value, fault_owner = self.mm.read_with_translation(va, chain, size)
             if fault_owner is not None:
@@ -132,7 +132,7 @@ class Machine:
 
     def write_memory_va(self, va: int, value: int, size: int = 4) -> None:
         """通过虚拟地址写入内存"""
-        chain = self.get_memtable_chain()
+        chain = self.get_pagetable_chain()
         if chain:
             fault_owner = self.mm.write_with_translation(va, value, chain, size)
             if fault_owner is not None:

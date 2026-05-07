@@ -9,9 +9,9 @@ DomainBlock 布局:
     0x04: exception_vector
     0x08: reserved
     0x0C: interrupt_ctrl
-    0x10: memtable_address
+    0x10: ipa_regions (父域设置，只读)
     0x14: domain_id
-    0x18: reserved (原 parent_block)
+    0x18: pagetable (子域设置，可写)
     0x1C: child_block
     0x20: security_domain
     0x24: access_id
@@ -35,9 +35,9 @@ from rpa_sim.isa_simple import (
 OFFSET_CTRLBLOCK_SIZE = 0x00
 OFFSET_EXCEPTION_VECTOR = 0x04
 OFFSET_INTERRUPT_CTRL = 0x0C
-OFFSET_MEMTABLE_ADDRESS = 0x10
+OFFSET_IPA_REGIONS = 0x10
 OFFSET_DOMAIN_ID = 0x14
-OFFSET_RESERVED_18 = 0x18
+OFFSET_PAGETABLE = 0x18
 OFFSET_CHILD_BLOCK = 0x1C
 
 
@@ -57,7 +57,7 @@ class TestDescendEscalate:
         entry_addr = 0x2000
         mem.write_word(block_addr + OFFSET_CTRLBLOCK_SIZE, CTRLBLOCK_SIZE)  # ctrlblock_size
         mem.write_word(block_addr + OFFSET_EXCEPTION_VECTOR, 0)             # exception_vector
-        mem.write_word(block_addr + OFFSET_MEMTABLE_ADDRESS, 0)             # memtable_address
+        mem.write_word(block_addr + OFFSET_IPA_REGIONS, 0)             # ipa_regions
         mem.write_word(block_addr + OFFSET_SAVED_LR, entry_addr)            # saved_lr = 入口地址
 
         rpa = RPALogic()
@@ -110,7 +110,7 @@ class TestDescendEscalate:
         entry_addr = 0x2000
         mem.write_word(block_addr + OFFSET_CTRLBLOCK_SIZE, CTRLBLOCK_SIZE)  # ctrlblock_size
         mem.write_word(block_addr + OFFSET_EXCEPTION_VECTOR, 0)             # exception_vector
-        mem.write_word(block_addr + OFFSET_MEMTABLE_ADDRESS, 0)             # memtable_address
+        mem.write_word(block_addr + OFFSET_IPA_REGIONS, 0)             # ipa_regions
         mem.write_word(block_addr + OFFSET_SAVED_LR, entry_addr)            # saved_lr = 入口地址
 
         rpa = RPALogic()
@@ -144,22 +144,22 @@ class TestDescendEscalate:
         # 验证：ESCALATE 跳转到了父域的 exception_vector 并执行了异常处理代码
         assert core.state.get_reg(2) == 0xCAFE
 
-    def test_descend_updates_memtable_chain(self):
+    def test_descend_updates_pagetable_chain(self):
         """
-        DESCEND 更新 memtable_chain，ESCALATE 恢复
+        DESCEND 更新 pagetable_chain，ESCALATE 恢复
         """
         mem = Memory(size=64 * 1024)
 
         block_addr = 0x0800
         mem.write_word(block_addr + OFFSET_CTRLBLOCK_SIZE, CTRLBLOCK_SIZE)  # ctrlblock_size
         mem.write_word(block_addr + OFFSET_EXCEPTION_VECTOR, 0)             # exception_vector
-        mem.write_word(block_addr + OFFSET_MEMTABLE_ADDRESS, 0x10000)       # memtable_address
+        mem.write_word(block_addr + OFFSET_IPA_REGIONS, 0x10000)       # ipa_regions
         mem.write_word(block_addr + OFFSET_SAVED_LR, 0x2000)                # saved_lr = 入口地址
 
         rpa = RPALogic()
         rpa.memory = mem
         core = SimpleISA(rpa=rpa, memory=mem)
-        core.memtable_chain = []
+        core.pagetable_chain = []
 
         core.load_assembly("""
             MOV R0, #0x0800
@@ -178,12 +178,12 @@ class TestDescendEscalate:
         core.state.pc = 0x0000
         core.run()
 
-        # ESCALATE 后 memtable_chain 应该恢复为空
-        assert core.memtable_chain == []
+        # ESCALATE 后 pagetable_chain 应该恢复为空
+        assert core.pagetable_chain == []
 
     def test_shared_memory_between_domains(self):
         """
-        父子域共享内存（memtable_address = 0）
+        父子域共享内存（ipa_regions = 0）
         """
         mem = Memory(size=64 * 1024)
 
@@ -194,7 +194,7 @@ class TestDescendEscalate:
         block_addr = 0x1000
         mem.write_word(block_addr + OFFSET_CTRLBLOCK_SIZE, CTRLBLOCK_SIZE)  # ctrlblock_size
         mem.write_word(block_addr + OFFSET_EXCEPTION_VECTOR, 0)             # exception_vector
-        mem.write_word(block_addr + OFFSET_MEMTABLE_ADDRESS, 0)             # memtable_address = 0 (共享)
+        mem.write_word(block_addr + OFFSET_IPA_REGIONS, 0)             # ipa_regions = 0 (共享)
         mem.write_word(block_addr + OFFSET_SAVED_LR, 0x2000)                # saved_lr = 入口地址
 
         rpa = RPALogic()
@@ -243,7 +243,7 @@ class TestDescendEscalate:
         entry_addr = 0x2000
         mem.write_word(child_block_addr + OFFSET_CTRLBLOCK_SIZE, CTRLBLOCK_SIZE)
         mem.write_word(child_block_addr + OFFSET_EXCEPTION_VECTOR, 0)
-        mem.write_word(child_block_addr + OFFSET_MEMTABLE_ADDRESS, 0)
+        mem.write_word(child_block_addr + OFFSET_IPA_REGIONS, 0)
         mem.write_word(child_block_addr + OFFSET_SAVED_LR, entry_addr)
 
         rpa = RPALogic()
@@ -294,7 +294,7 @@ class TestMemoryTranslation:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.memtable_chain = [0x10000]
+        core.pagetable_chain = [0x10000]
 
         core.load_assembly("""
             MOV R1, #0x1000
@@ -320,7 +320,7 @@ class TestMemoryTranslation:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.memtable_chain = [0x10000]
+        core.pagetable_chain = [0x10000]
 
         core.load_assembly("""
             MOV R0, #0xCAFEBABE
@@ -357,13 +357,13 @@ class TestMemoryTranslation:
         block_addr = 0x0800
         mem.write_word(block_addr + OFFSET_CTRLBLOCK_SIZE, CTRLBLOCK_SIZE)
         mem.write_word(block_addr + OFFSET_EXCEPTION_VECTOR, 0)
-        mem.write_word(block_addr + OFFSET_MEMTABLE_ADDRESS, 0x20000)
+        mem.write_word(block_addr + OFFSET_IPA_REGIONS, 0x20000)
         mem.write_word(block_addr + OFFSET_SAVED_LR, 0x2000)
 
         rpa = RPALogic()
         rpa.memory = mem
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.memtable_chain = [0x10000]  # Domain 0 的页表
+        core.pagetable_chain = [0x10000]  # Domain 0 的页表
 
         # 主程序
         core.load_assembly("""
@@ -410,7 +410,7 @@ class TestFaultHandling:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.memtable_chain = [0x10000]
+        core.pagetable_chain = [0x10000]
 
         core.load_assembly("""
             MOV R0, #0x5000
@@ -492,8 +492,8 @@ class TestMultiLevelTranslation:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        # memtable_chain: [Domain 1 页表, Domain 0 页表]
-        core.memtable_chain = [0x20000, 0x10000]
+        # pagetable_chain: [Domain 1 页表, Domain 0 页表]
+        core.pagetable_chain = [0x20000, 0x10000]
 
         core.load_assembly("""
             MOV R1, #0x1000
@@ -523,7 +523,7 @@ class TestMultiLevelTranslation:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.memtable_chain = [0x20000, 0x10000]
+        core.pagetable_chain = [0x20000, 0x10000]
 
         core.load_assembly("""
             MOV R1, #0x1000
@@ -567,7 +567,7 @@ class TestPermissionChecking:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.memtable_chain = [0x10000]
+        core.pagetable_chain = [0x10000]
 
         core.load_assembly("""
             MOV R1, #0x1000
@@ -602,7 +602,7 @@ class TestPermissionChecking:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.memtable_chain = [0x10000]
+        core.pagetable_chain = [0x10000]
 
         core.load_assembly("""
             MOV R0, #0xCAFEBABE
@@ -638,7 +638,7 @@ class TestPermissionChecking:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.memtable_chain = [0x10000]
+        core.pagetable_chain = [0x10000]
 
         core.load_assembly("""
             MOV R0, #0xCAFEBABE
@@ -676,7 +676,7 @@ class TestPermissionChecking:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.memtable_chain = [0x10000]
+        core.pagetable_chain = [0x10000]
 
         core.load_assembly("""
             MOV R1, #0x1000
@@ -711,7 +711,7 @@ class TestPermissionChecking:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.memtable_chain = [0x10000]
+        core.pagetable_chain = [0x10000]
 
         core.load_assembly("""
             MOV R0, #0xCAFEBABE

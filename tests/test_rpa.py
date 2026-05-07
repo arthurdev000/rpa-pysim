@@ -13,10 +13,10 @@ class TestDomainBlock:
     def test_create_block(self):
         block = DomainBlock(
             exception_vector=0x2000,
-            memtable_address=0x10000,
+            ipa_regions=0x10000,
         )
         assert block.exception_vector == 0x2000
-        assert block.memtable_address == 0x10000
+        assert block.ipa_regions == 0x10000
 
 
 class TestDomain:
@@ -76,13 +76,13 @@ class TestRPALogic:
         # 第一个子域控制块
         child1_addr = 0x1000
         mem.write_word(child1_addr + 0x00, 32)  # ctrlblock_size
-        mem.write_word(child1_addr + 0x10, 0)   # memtable_address
+        mem.write_word(child1_addr + 0x10, 0)   # ipa_regions
         mem.write_word(child1_addr + SAVED_LR_OFFSET, 0x2000)  # saved_lr
 
         # 第二个子域控制块
         child2_addr = 0x2000
         mem.write_word(child2_addr + 0x00, 32)  # ctrlblock_size
-        mem.write_word(child2_addr + 0x10, 0)   # memtable_address
+        mem.write_word(child2_addr + 0x10, 0)   # ipa_regions
         mem.write_word(child2_addr + SAVED_LR_OFFSET, 0x3000)  # saved_lr
 
         # 首次 DESCEND 到 child1
@@ -139,9 +139,9 @@ class TestSimpleISA:
         # 0x04: exception_vector
         # 0x08: reserved
         # 0x0C: interrupt_ctrl
-        # 0x10: memtable_address
+        # 0x10: ipa_regions
         # 0x14: domain_id
-        # 0x18: reserved (原 parent_block)
+        # 0x18: pagetable (子域设置)
         # 0x1C: child_block
         # 0x20: security_domain
         # 0x24: access_id
@@ -153,7 +153,7 @@ class TestSimpleISA:
         child_entry = 0x2000
         mem.write_word(block_addr + 0x00, 32)               # ctrlblock_size = 32
         mem.write_word(block_addr + 0x04, 0)                # exception_vector (子域自己用的)
-        mem.write_word(block_addr + 0x10, 0)                # memtable_address
+        mem.write_word(block_addr + 0x10, 0)                # ipa_regions
         mem.write_word(block_addr + SAVED_LR_OFFSET, child_entry)      # saved_lr = 入口地址 (父域设置)
 
         rpa = RPALogic()
@@ -254,8 +254,8 @@ class TestMemoryTranslation:
         # 写入数据到物理地址
         mem.write_word(0x2000, 0xDEADBEEF)
 
-        # 设置 memtable_chain
-        core.memtable_chain = [0x10000]
+        # 设置 pagetable_chain
+        core.pagetable_chain = [0x10000]
 
         core.load_assembly("""
             MOV R1, #0x1000
@@ -279,8 +279,8 @@ class TestMemoryTranslation:
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
         pt.map(0x1000, 0x2000)
 
-        # 设置 memtable_chain
-        core.memtable_chain = [0x10000]
+        # 设置 pagetable_chain
+        core.pagetable_chain = [0x10000]
 
         core.load_assembly("""
             MOV R0, #0xDEADBEEF
@@ -327,14 +327,14 @@ class TestIntegration:
 
         block = DomainBlock(
             exception_vector=0x4004,
-            memtable_address=0x50000,
+            ipa_regions=0x50000,
         )
 
         rpa._write_domain_block(0x1000, block)
         read_block = rpa._read_domain_block(0x1000)
 
         assert read_block.exception_vector == 0x4004
-        assert read_block.memtable_address == 0x50000
+        assert read_block.ipa_regions == 0x50000
 
     def test_descend_escalate_return_cycle(self):
         """Test complete DESCEND -> ESCALATE -> RETURN cycle"""
@@ -350,7 +350,7 @@ class TestIntegration:
 
         mem.write_word(block_addr + 0x00, 32)                    # ctrlblock_size
         mem.write_word(block_addr + 0x04, 0)                     # exception_vector (子域自己的)
-        mem.write_word(block_addr + 0x10, 0)                     # memtable_address
+        mem.write_word(block_addr + 0x10, 0)                     # ipa_regions
         mem.write_word(block_addr + SAVED_LR_OFFSET, child_entry)           # saved_lr = 入口地址 (父域设置)
 
         # 设置父域的 exception_vector
@@ -417,7 +417,7 @@ class TestExitInstruction:
         child_entry = 0x2000
         mem.write_word(block_addr + 0x00, 32)               # ctrlblock_size
         mem.write_word(block_addr + 0x04, 0)                # exception_vector
-        mem.write_word(block_addr + 0x10, 0)                # memtable_address
+        mem.write_word(block_addr + 0x10, 0)                # ipa_regions
         mem.write_word(block_addr + SAVED_LR_OFFSET, child_entry)      # saved_lr
 
         core = SimpleISA(rpa=rpa, memory=mem)
@@ -472,7 +472,7 @@ class TestExitInstruction:
         child_entry = 0x2000
         mem.write_word(block_addr + 0x00, 32)               # ctrlblock_size
         mem.write_word(block_addr + 0x04, 0)                # exception_vector
-        mem.write_word(block_addr + 0x10, 0)                # memtable_address
+        mem.write_word(block_addr + 0x10, 0)                # ipa_regions
 
         core = SimpleISA(rpa=rpa, memory=mem)
         rpa.root_domain.block.exception_vector = 0x3000

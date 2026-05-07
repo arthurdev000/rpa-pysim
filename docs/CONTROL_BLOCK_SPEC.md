@@ -36,74 +36,98 @@ root_domain (最高特权，系统启动时创建)
 ```
 偏移    字段名                大小    说明
 ────    ──────                ────    ────
-0x00    execution_address     4       执行地址
+0x00    ctrlblock_size        4       控制块大小（必须为32的倍数）
 0x04    exception_vector      4       异常向量
-0x08    interrupt_vector      4       中断向量
+0x08    reserved_08           4       保留（原 interrupt_vector）
 0x0C    interrupt_ctrl        4       中断控制器
-0x10    memtable_address      4       内存区域表地址
-0x14    status                4       状态码 (Decoder上报)
-0x18    reserved              4       保留
-0x1C    padding               4       填充 (对齐到0x20)
-0x20-0x7F  reserved           96      保留
+0x10    ipa_regions           4       IPA 区域表地址（父域设置，子域只读）
+0x14    domain_id             4       域ID（系统分配）
+0x18    pagetable             4       页表地址（子域设置，子域可写）
+0x1C    child_block           4       子域控制块地址（父域维护）
+0x20    security_domain       4       安全域 handle
+0x24    access_id             4       访问 ID (DMA 用)
+0x28    saved_sp              4       保存的栈指针（ISA扩展）
+0x2C    saved_lr              4       保存的返回地址（ISA扩展）
+0x30    saved_psr             4       保存的程序状态（ISA扩展）
+0x34-0x3F reserved             12     保留
 ```
 
 ### 字段详解
 
-#### execution_address (0x00)
-- 子域执行地址
-- DESCEND 后硬件跳转到此地址
-- 首次 DESCEND：入口地址
-- 后续 DESCEND：保存的返回地址
+#### ctrlblock_size (0x00)
+- 控制块大小，必须为32的倍数
+- DESCEND 时硬件验证对齐
 
 #### exception_vector (0x04)
 - 异常处理入口地址
 - 所有非中断异常（包括 ESCALATE）跳转到此地址
 - 值为 0 表示禁用异常处理，异常直接传播到父域
 
-#### interrupt_vector (0x08)
-- 中断处理入口地址
-- 外部中断发生时跳转到此地址
-- 仅当 interrupt_ctrl != 0 时有效
+#### reserved_08 (0x08)
+- 保留字段（原 interrupt_vector）
 
 #### interrupt_ctrl (0x0C)
-- 中断控制器
+- 中断控制器 handle
 - 值为 0：子域不能操作中断控制器
 - 值为 非0：子域可以通过 `sysop irq` 操作中断
 
-#### memtable_address (0x10)
-- 内存区域表地址
-- 父域告知子域可用的内存区域
-- 子域如需建立映射：保存旧表 → 创建新表 → 更新此字段（更新动作表示生效）
+#### ipa_regions (0x10)
+- IPA 区域表地址
+- **父域设置，子域只读**
+- 定义子域可用的 IPA 范围约束
 - 值为 0：不建立新映射（try-catch 场合）
 
-#### status (0x14)
-- 状态码，由 Decoder 上报给 RTL
-- RTL 通过 `decoder->dump_status(status)` 获取详细状态信息
-- 不同 ISA 可有不同的状态定义
+#### domain_id (0x14)
+- 域 ID，由系统分配
+- 用于调试和安全子系统
 
-#### reserved (0x18)
-- 保留字段
+#### pagetable (0x18)
+- 页表地址
+- **子域设置，子域可写**
+- 定义 VA → IPA 的映射
+- 子域创建页表后更新此字段
 
-#### padding (0x1C)
-- 填充字段，用于对齐到 0x20
+#### child_block (0x1C)
+- 子域控制块地址
+- 由父域维护
+- 用于 RETURN 指令返回子域
+
+#### security_domain (0x20)
+- 安全域 handle
+- 用于内存加密和 DMA 访问控制
+
+#### access_id (0x24)
+- 访问 ID
+- 用于 DMA 访问控制
+
+#### saved_sp (0x28)
+- ISA 保存的栈指针
+- ESCALATE 时保存，RETURN 时恢复
+
+#### saved_lr (0x2C)
+- ISA 保存的返回地址
+- 首次 DESCEND：父域写入入口地址
+- ESCALATE：保存返回地址
+- RETURN：从该地址恢复执行
+
+#### saved_psr (0x30)
+- ISA 保存的程序状态寄存器
+- 保存 N, Z, C, V 标志
 
 ---
 
-## 内存区域表（Memtable）
+## IPA 区域表与页表
 
-描述 Domain 可用的地址空间。
+控制块使用两个独立字段管理地址翻译，实现安全隔离：
 
-```
-偏移    字段名          大小    说明
-────    ──────          ────    ────
-0x00    count           4       条目数量
-0x04    reserved        4       保留
-0x08    entry_0         12      第一个条目
-0x14    entry_1         12      第二个条目
-...     ...             ...     ...
-```
+| 字段 | 设置者 | 权限 | 用途 |
+|------|--------|------|------|
+| ipa_regions | 父域 | 子域只读 | 定义可用的 IPA 范围约束 |
+| pagetable | 子域 | 子域可写 | 子域创建的 VA→IPA 页表 |
 
-每个条目（12 字节）：
+### IPA 区域表（ipa_regions）
+
+描述父域分配给子域的 IPA 空间范围约束。
 
 ```
 偏移    字段名          大小    说明
@@ -111,6 +135,22 @@ root_domain (最高特权，系统启动时创建)
 0x00    base            4       基地址
 0x04    size            4       大小
 0x08    attr            4       属性
+...     ...             ...     更多条目
+以全零条目结束
+```
+
+### 页表（pagetable）
+
+描述子域的 VA → IPA 映射。
+
+```
+偏移    字段名          大小    说明
+────    ──────          ────    ────
+0x00    base            4       虚拟页基址
+0x04    size            4       页大小
+0x08    attr            4       属性（rwx c）
+...     ...             ...     更多条目
+以全零条目结束
 ```
 
 ### 属性字段 (attr)
@@ -126,10 +166,10 @@ root_domain (最高特权，系统启动时创建)
 
 ### 自洽性要求
 
-控制块本身必须位于某个 memtable 条目描述的区域内：
+控制块本身必须位于 ipa_regions 表中某个条目描述的区域内：
 
 ```
-memtable_addr 指向的表中，
+ipa_regions 指向的表中，
 至少有一个条目满足：
   entry.base <= control_block_addr < entry.base + entry.size
 ```
@@ -161,11 +201,11 @@ sysop irq, write, #irq_id, Rs     ; 写入中断 irq_id 的设置
 权限检查：
 - 如果 interrupt_ctrl == 0，触发异常
 
-#### memtable - 内存区域操作
+#### pagetable - 页表操作
 
 ```
-sysop memtable, read, #index, Rd   ; 读取第 index 个内存区域
-sysop memtable, write, #index, Rs  ; 写入第 index 个内存区域
+sysop pagetable, read, #index, Rd   ; 读取第 index 个页表条目
+sysop pagetable, write, #index, Rs  ; 写入第 index 个页表条目
 ```
 
 ---
@@ -181,12 +221,16 @@ DESCEND Rd    ; Rd = 控制块地址
 执行流程：
 1. 从 Rd 读取控制块地址
 2. 验证控制块有效性：
-   - 地址对齐到 64 字节
-   - execution_address 有效
+   - 地址对齐到 32 字节
+   - ctrlblock_size 有效
+   - 父域无其他子域（child_block == 0 或 child_block == Rd）
 3. 硬件操作：
-   - 保存当前 PC 到父域控制块的 saved_pc
-   - 设置当前 Domain 为新 Domain
-   - 跳转到 execution_address
+   - 如果 child_block == Rd：RETURN 语义，恢复子域上下文
+   - 否则：首次 DESCEND
+     - 分配 domain_id
+     - 保存父域 PC 到父域控制块
+     - 设置父域 child_block = Rd
+     - 跳转到 saved_lr（由父域预先设置）
 4. 清除流水线（上下文同步）
 
 ### ESCALATE
