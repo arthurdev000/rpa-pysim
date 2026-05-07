@@ -34,66 +34,39 @@ Domain 层级结构:
     │                                                                 │
     └─────────────────────────────────────────────────────────────────┘
 
-DomainBlock (控制块):
-====================
+DomainBlock (控制块) - RPA 通用定义:
+====================================
 
-    ┌────────────────────────────────────────────────────────────────┐
-    │                    DomainBlock 内存布局                        │
-    │                     (40 字节, 32字节对齐)                      │
-    ├────────────┬───────────────────────────────────────────────────┤
-    │ 偏移       │ 字段                                              │
-    ├────────────┼───────────────────────────────────────────────────┤
-    │ 0x00       │ ctrlblock_size      控制块大小 (含自身)           │
-    │ 0x04       │ exception_vector    异常向量                      │
-    │ 0x08       │ reserved_08         保留                          │
-    │ 0x0C       │ interrupt_ctrl      中断控制器 handle             │
-    │ 0x10       │ memtable_address    内存区域表地址                │
-    │ 0x14       │ domain_id           域ID (系统分配，调试用)       │
-    │ 0x18       │ parent_block        父域控制块地址 (可选)         │
-    │ 0x1C       │ child_block         子域控制块地址 (父域维护)     │
-    │ 0x20       │ security_domain     安全域 handle                 │
-    │ 0x24       │ access_id           访问 ID (DMA 用)              │
-    └────────────┴───────────────────────────────────────────────────┘
+RPA 是纯逻辑架构，不与特定 ISA 绑定。以下字段序号与位宽无关。
 
-    ctrlblock_size 说明:
-    - 必须设置，值不对时 DESCEND 会报错
-    - 最小值: 28 bytes (所有 RPA 字段)
-    - 当前实现固定为 32 bytes
-    - 必须是 32 的倍数
+    ┌──────────┬────────────────────────────────────────────────────────┐
+    │ 序号     │ 字段                                                   │
+    ├──────────┼────────────────────────────────────────────────────────┤
+    │ 0        │ ctrlblock_size      控制块大小                         │
+    │ 1        │ exception_vector    异常向量 (ESCALATE 跳转地址)       │
+    │ 2        │ reserved            保留                               │
+    │ 3        │ interrupt_ctrl      中断控制器 handle                  │
+    │ 4        │ memtable_address    内存翻译表地址                     │
+    │ 5        │ domain_id           域ID (系统分配)                    │
+    │ 6        │ reserved            保留                               │
+    │ 7        │ child_block         子域控制块地址 (父域维护)          │
+    │ 8        │ security_domain     安全域 handle                      │
+    │ 9        │ access_id           访问 ID (DMA 用)                   │
+    ├──────────┼────────────────────────────────────────────────────────┤
+    │ ...      │ ISA Specific        ISA 特定控制字段                   │
+    └──────────┴────────────────────────────────────────────────────────┘
 
-    child_block 说明:
-    - 由父域维护，记录子域控制块地址
-    - 用于 RETURN 指令返回子域
+    ctrlblock_size:
+        - 必须设置，值不对时 DESCEND 会报错
+        - 必须是对齐要求的倍数
 
-    interrupt_ctrl 说明:
-    - 中断控制器实例 handle
-    - 通过 sysop irq, request 申请获得
-    - 用于 sysop irq 操作
+    child_block:
+        - 由父域维护，记录子域控制块地址
+        - 用于 RETURN 指令返回子域
 
-ISA 扩展区域 (偏移 0x20 起):
-    │ 0x20       │ saved_sp            ISA 保存的栈指针            │
-    │ 0x24       │ saved_lr            ISA 保存的返回地址          │
-    │ 0x28       │ saved_psr           ISA 保存的程序状态寄存器    │
-    │ 0x2C-0x3F  │ reserved            保留（对齐到 64 字节）      │
-
-中断现场保存区域 (偏移 0x40 起):
-    │ 0x40       │ irq_saved_r0        中断保存 R0                 │
-    │ 0x44       │ irq_saved_r1        中断保存 R1                 │
-    │ 0x48       │ irq_saved_r2        中断保存 R2                 │
-    │ 0x4C       │ irq_saved_r3        中断保存 R3                 │
-    │ 0x50       │ irq_saved_r4        中断保存 R4                 │
-    │ 0x54       │ irq_saved_r5        中断保存 R5                 │
-    │ 0x58       │ irq_saved_r6        中断保存 R6                 │
-    │ 0x5C       │ irq_saved_r7        中断保存 R7                 │
-    │ 0x60       │ irq_saved_r8        中断保存 R8                 │
-    │ 0x64       │ irq_saved_r9        中断保存 R9                 │
-    │ 0x68       │ irq_saved_r10       中断保存 R10                │
-    │ 0x6C       │ irq_saved_r11       中断保存 R11                │
-    │ 0x70       │ irq_saved_r12       中断保存 R12                │
-    │ 0x74       │ irq_saved_sp        中断保存 SP                 │
-    │ 0x78       │ irq_saved_lr        中断保存 LR                 │
-    │ 0x7C       │ irq_saved_pc        中断保存 PC                 │
-    │ 0x80       │ irq_saved_psr       中断保存 PSR                │
+    interrupt_ctrl:
+        - 中断控制器实例 handle
+        - 通过 sysop irq, request 申请获得
 
 DESCEND 流程:
 =============
@@ -202,16 +175,16 @@ OFFSET_RESERVED_08 = 0x08           # 保留（原 interrupt_vector）
 OFFSET_INTERRUPT_CTRL = 0x0C
 OFFSET_MEMTABLE_ADDRESS = 0x10
 OFFSET_DOMAIN_ID = 0x14
-OFFSET_PARENT_BLOCK = 0x18
+OFFSET_RESERVED_18 = 0x18           # 保留（原 parent_block）
 OFFSET_CHILD_BLOCK = 0x1C
 # 安全域扩展字段
 OFFSET_SECURITY_DOMAIN = 0x20       # 安全域 handle
 OFFSET_ACCESS_ID = 0x24             # 访问 ID (DMA 用)
 
 # DomainBlock 大小常量
-CTRLBLOCK_BASE_SIZE = 0x20          # 基本大小 32 字节
+CTRLBLOCK_BASE_SIZE = 0x28          # 基本大小 40 字节（含安全域字段）
 CTRLBLOCK_SECURITY_SIZE = 0x28      # 含安全域字段 40 字节
-CTRLBLOCK_ALIGN = 32                # 对齐要求
+CTRLBLOCK_ISA_CONTEXT_SIZE = 0x10   # ISA 上下文保存区 16 字节 (SP+LR+PSR+reserved)
 
 
 @dataclass
@@ -233,7 +206,7 @@ class DomainBlock:
     interrupt_ctrl: int = 0                 # 0x0C: 中断控制器 handle
     memtable_address: int = 0               # 0x10: 内存区域表地址
     domain_id: int = 0                      # 0x14: 域ID (系统分配)
-    parent_block: int = 0                   # 0x18: 父域控制块地址 (可选)
+    # 0x18: 保留（原 parent_block）
     child_block: int = 0                    # 0x1C: 子域控制块地址 (父域维护)
 
     # 安全域扩展字段
@@ -450,7 +423,6 @@ class RPALogic:
 
         # 更新 Python 对象
         block.domain_id = domain_id
-        block.parent_block = self.current_domain.block_addr
         block.security_domain = sec_domain_handle
 
         self.current_domain.block.child_block = block_addr
@@ -458,7 +430,6 @@ class RPALogic:
         # 写入内存
         if self.memory:
             self.memory.write_word(block_addr + OFFSET_DOMAIN_ID, domain_id)
-            self.memory.write_word(block_addr + OFFSET_PARENT_BLOCK, self.current_domain.block_addr)
             self.memory.write_word(block_addr + OFFSET_SECURITY_DOMAIN, sec_domain_handle)
             self.memory.write_word(self.current_domain.block_addr + OFFSET_CHILD_BLOCK, block_addr)
 
@@ -516,13 +487,11 @@ class RPALogic:
             # EXIT 语义：清空父子关系
             # 更新 Python 对象
             parent.block.child_block = 0
-            self.current_domain.block.parent_block = 0
             self.current_domain.block.domain_id = 0
 
             # 写入内存
             if self.memory:
                 self.memory.write_word(parent.block_addr + OFFSET_CHILD_BLOCK, 0)
-                self.memory.write_word(child_block_addr + OFFSET_PARENT_BLOCK, 0)
                 self.memory.write_word(child_block_addr + OFFSET_DOMAIN_ID, 0)
 
             # 解绑安全域
@@ -581,7 +550,7 @@ class RPALogic:
                 interrupt_ctrl=self.memory.read_word(addr + OFFSET_INTERRUPT_CTRL),
                 memtable_address=self.memory.read_word(addr + OFFSET_MEMTABLE_ADDRESS),
                 domain_id=self.memory.read_word(addr + OFFSET_DOMAIN_ID),
-                parent_block=self.memory.read_word(addr + OFFSET_PARENT_BLOCK),
+                # 0x18 保留（原 parent_block）
                 child_block=self.memory.read_word(addr + OFFSET_CHILD_BLOCK),
                 security_domain=self.memory.read_word(addr + OFFSET_SECURITY_DOMAIN),
                 access_id=self.memory.read_word(addr + OFFSET_ACCESS_ID),
@@ -597,7 +566,7 @@ class RPALogic:
             self.memory.write_word(addr + OFFSET_INTERRUPT_CTRL, block.interrupt_ctrl)
             self.memory.write_word(addr + OFFSET_MEMTABLE_ADDRESS, block.memtable_address)
             self.memory.write_word(addr + OFFSET_DOMAIN_ID, block.domain_id)
-            self.memory.write_word(addr + OFFSET_PARENT_BLOCK, block.parent_block)
+            # 0x18 保留（原 parent_block）
             self.memory.write_word(addr + OFFSET_CHILD_BLOCK, block.child_block)
             self.memory.write_word(addr + OFFSET_SECURITY_DOMAIN, block.security_domain)
             self.memory.write_word(addr + OFFSET_ACCESS_ID, block.access_id)

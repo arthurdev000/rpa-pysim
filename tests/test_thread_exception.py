@@ -7,35 +7,38 @@ Thread and Exception Tests for RPA
 DomainBlock 布局:
     0x00: ctrlblock_size
     0x04: exception_vector
-    0x08: interrupt_vector
+    0x08: reserved
     0x0C: interrupt_ctrl
     0x10: memtable_address
     0x14: domain_id
-    0x18: parent_block
+    0x18: reserved (原 parent_block)
     0x1C: child_block
-    0x20: saved_sp (ISA 扩展)
-    0x24: saved_lr (ISA 扩展 - 首次 DESCEND 入口地址由父域写入，ESCALATE 保存返回地址)
-    0x28: saved_psr (ISA 扩展)
+    0x20: security_domain
+    0x24: access_id
+    0x28: saved_sp (ISA 扩展)
+    0x2C: saved_lr (ISA 扩展 - 首次 DESCEND 入口地址由父域写入，ESCALATE 保存返回地址)
+    0x30: saved_psr (ISA 扩展)
 """
 
 import pytest
 from rpa_sim import (
     Memory, SimpleISA, MemoryManager, DomainBlock, RPALogic, CTRLBLOCK_SIZE
 )
+from rpa_sim.isa_simple import (
+    SAVED_SP_OFFSET as OFFSET_SAVED_SP,
+    SAVED_LR_OFFSET as OFFSET_SAVED_LR,
+    SAVED_PSR_OFFSET as OFFSET_SAVED_PSR
+)
 
 
 # 偏移常量
 OFFSET_CTRLBLOCK_SIZE = 0x00
 OFFSET_EXCEPTION_VECTOR = 0x04
-OFFSET_INTERRUPT_VECTOR = 0x08
 OFFSET_INTERRUPT_CTRL = 0x0C
 OFFSET_MEMTABLE_ADDRESS = 0x10
 OFFSET_DOMAIN_ID = 0x14
-OFFSET_PARENT_BLOCK = 0x18
+OFFSET_RESERVED_18 = 0x18
 OFFSET_CHILD_BLOCK = 0x1C
-OFFSET_SAVED_SP = 0x20
-OFFSET_SAVED_LR = 0x24
-OFFSET_SAVED_PSR = 0x28
 
 
 class TestDescendEscalate:
@@ -265,9 +268,9 @@ class TestDescendEscalate:
         core.state.pc = 0x0000
         core.run()
 
-        # 验证 parent_block 被正确写入
-        parent_block = mem.read_word(child_block_addr + OFFSET_PARENT_BLOCK)
-        assert parent_block == 0  # 根域的 block_addr 是 0
+        # 验证 child_block 被正确写入父域
+        child_block = mem.read_word(0 + OFFSET_CHILD_BLOCK)  # 根域 block_addr 是 0
+        assert child_block == child_block_addr
 
 
 class TestMemoryTranslation:

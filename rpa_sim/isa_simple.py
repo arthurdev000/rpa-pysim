@@ -4,6 +4,39 @@ SimpleISA - 简化指令集核心
 这是 RPA 架构的指令执行核心。每个 Domain 可以有不同的 ISA 实现，
 SimpleISA 是一个简化版的类 ARM 指令集，用于演示 RPA 的核心机制。
 
+DomainBlock 内存布局 (32 位实现, 4 字节宽度):
+==============================================
+
+    ┌──────────┬────────────────────────────────────────────────────────┐
+    │ 偏移     │ 字段                                                   │
+    ├──────────┼────────────────────────────────────────────────────────┤
+    │ 0x00     │ ctrlblock_size      控制块大小                         │
+    │ 0x04     │ exception_vector    异常向量 (ESCALATE 跳转地址)       │
+    │ 0x08     │ reserved            保留                               │
+    │ 0x0C     │ interrupt_ctrl      中断控制器 handle                  │
+    │ 0x10     │ memtable_address    内存翻译表地址                     │
+    │ 0x14     │ domain_id           域ID (系统分配)                    │
+    │ 0x18     │ reserved            保留                               │
+    │ 0x1C     │ child_block         子域控制块地址                     │
+    │ 0x20     │ security_domain     安全域 handle                      │
+    │ 0x24     │ access_id           访问 ID (DMA 用)                   │
+    ├──────────┴────────────────────────────────────────────────────────┤
+    │ 以上为 RPA 通用字段，以下为 SimpleISA 特定字段                      │
+    ├──────────┬────────────────────────────────────────────────────────┤
+    │ 0x28     │ saved_sp            ESCALATE 保存的栈指针              │
+    │ 0x2C     │ saved_lr            ESCALATE 保存的返回地址            │
+    │ 0x30     │ saved_psr           ESCALATE 保存的程序状态             │
+    │ 0x34     │ reserved            保留                               │
+    ├──────────┴────────────────────────────────────────────────────────┤
+    │ 中断现场保存区域                                                    │
+    ├──────────┬────────────────────────────────────────────────────────┤
+    │ 0x40     │ irq_saved_r0        中断保存 R0                        │
+    │ 0x44     │ irq_saved_r1        中断保存 R1                        │
+    │ ...      │ ...                                                     │
+    │ 0x7C     │ irq_saved_pc        中断保存 PC                        │
+    │ 0x80     │ irq_saved_psr       中断保存 PSR                       │
+    └──────────┴────────────────────────────────────────────────────────┘
+
 支持的指令:
 ============
 
@@ -29,11 +62,6 @@ RPA 指令：DESCEND, ESCALATE, RETURN, SYSOP
 上下文保存策略:
 - ESCALATE/RETURN: 保存 SP, LR, PSR (12 字节)
 - 中断: 保存所有寄存器 R0-R15 + PSR (68 字节)
-
-DomainBlock 扩展区域 (ISA 上下文保存):
-- 0x20-0x2B: ESCALATE 现场保存 (SP, LR, PSR)
-- 0x2C-0x3F: 保留
-- 0x40-0x83: 中断现场保存 (R0-R15 + PSR)
 
 地址翻译:
 ============
@@ -65,12 +93,13 @@ from enum import Enum, auto
 import re
 
 
-# DomainBlock 上下文保存区域偏移 (在基本 32 字节之后)
+# DomainBlock 上下文保存区域偏移 (在安全域扩展字段之后)
 # 这些偏移是相对于 DomainBlock 起始地址的
-SAVED_SP_OFFSET = 0x20    # ISA 保存的栈指针
-SAVED_LR_OFFSET = 0x24    # ISA 保存的链接寄存器（返回地址）
-SAVED_PSR_OFFSET = 0x28   # ISA 保存的程序状态寄存器 (N, Z, C, V)
-# 0x2C-0x3F 保留
+# 注意: 0x20-0x27 为 security_domain/access_id 字段，ISA 保存区从 0x28 开始
+SAVED_SP_OFFSET = 0x28    # ISA 保存的栈指针
+SAVED_LR_OFFSET = 0x2C    # ISA 保存的链接寄存器（返回地址）
+SAVED_PSR_OFFSET = 0x30   # ISA 保存的程序状态寄存器 (N, Z, C, V)
+# 0x34-0x3F 保留
 
 # 中断现场保存区域偏移 (从 0x40 开始)
 IRQ_SAVE_R0 = 0x40

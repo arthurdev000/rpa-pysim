@@ -66,15 +66,17 @@ core.run()
 |------|------|------|
 | 0x00 | ctrlblock_size | 控制块大小（必须为32的倍数） |
 | 0x04 | exception_vector | 异常向量 |
-| 0x08 | interrupt_vector | 中断向量 |
+| 0x08 | reserved_08 | 保留 |
 | 0x0C | interrupt_ctrl | 中断控制器 |
 | 0x10 | memtable_address | 内存翻译表地址 |
 | 0x14 | domain_id | 域ID（系统分配） |
-| 0x18 | parent_block | 父域控制块地址（系统写入） |
+| 0x18 | reserved_18 | 保留（原 parent_block） |
 | 0x1C | child_block | 子域控制块地址（父域维护） |
-| 0x20 | saved_sp | 保存的栈指针（ISA扩展） |
-| 0x24 | saved_lr | 保存的返回地址（ISA扩展） |
-| 0x28 | saved_psr | 保存的程序状态（ISA扩展） |
+| 0x20 | security_domain | 安全域 handle |
+| 0x24 | access_id | 访问 ID (DMA 用) |
+| 0x28 | saved_sp | 保存的栈指针（ISA扩展） |
+| 0x2C | saved_lr | 保存的返回地址（ISA扩展） |
+| 0x30 | saved_psr | 保存的程序状态（ISA扩展） |
 
 ## 运行测试
 

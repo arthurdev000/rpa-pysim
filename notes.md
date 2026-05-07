@@ -31,7 +31,7 @@
 | LevelConfig | DomainBlock |
 | INHERIT | PageTableMode.INHERIT 或删除（概念上表示继承页表） |
 
-### DomainBlock 字段 (28 字节 + 4 字节填充 = 32 字节, 32字节对齐)
+### DomainBlock 字段 (32 字节 + 4 字节填充 = 36 字节, 32字节对齐)
 
 | 偏移 | 字段 | 说明 |
 |------|------|------|
@@ -41,17 +41,19 @@
 | 0x0C | interrupt_ctrl | 中断控制器 handle |
 | 0x10 | memtable_address | 内存翻译表地址 |
 | 0x14 | domain_id | 域ID（系统分配，调试用） |
-| 0x18 | parent_block | 父域控制块地址（系统写入） |
+| 0x18 | reserved_18 | 保留（原 parent_block） |
 | 0x1C | child_block | 子域控制块地址（父域维护） |
+| 0x20 | security_domain | 安全域 handle |
+| 0x24 | access_id | 访问 ID (DMA 用) |
 
-### ISA 扩展区域 (偏移 0x20 起)
+### ESCALATE/RETURN 现场保存区域 (偏移 0x28 起，与安全域字段不冲突)
 
 | 偏移 | 字段 | 说明 |
 |------|------|------|
-| 0x20 | saved_sp | ISA 保存的栈指针 |
-| 0x24 | saved_lr | ISA 保存的返回地址（首次DESCEND父域写入入口，ESCALATE保存返回地址） |
-| 0x28 | saved_psr | ISA 保存的程序状态寄存器 |
-| 0x2C-0x3F | reserved | 保留 |
+| 0x28 | saved_sp | ISA 保存的栈指针 (ESCALATE) |
+| 0x2C | saved_lr | ISA 保存的返回地址 (ESCALATE) |
+| 0x30 | saved_psr | ISA 保存的程序状态寄存器 |
+| 0x34-0x3F | reserved | 保留 |
 
 ### 中断现场保存区域 (偏移 0x40 起)
 
@@ -155,8 +157,8 @@
 3. **跨域数据传递**
    - 寄存器传递：R0-R12, LR, SP 由 ISA 软件保存/恢复
    - 控制块传递：exception_vector, memtable_address 等
-   - 输入字段：ctrlblock_size, exception_vector, interrupt_vector, interrupt_ctrl, memtable_address
-   - 输出字段：domain_id (系统分配), parent_block (系统写入), child_block (父域维护)
+   - 输入字段：ctrlblock_size, exception_vector, interrupt_ctrl, memtable_address
+   - 输出字段：domain_id (系统分配), child_block (父域维护)
 
 4. **domain_id 分配** ✅
    - 自动递增分配（_next_domain_id）
@@ -165,7 +167,6 @@
 
 5. **child_block 维护** ✅
    - DESCEND 时自动更新父域的 child_block 字段
-   - 同时更新子域的 parent_block 字段
 
 ## 控制块设计
 
@@ -241,16 +242,22 @@
 - [x] 安全域创建/销毁接口
 - [x] DMA 访问控制
 - [x] 内存加密模拟
+- [x] 解决 security_domain 与 saved_sp 偏移冲突（ISA 保存区移至 0x28）
+- [ ] 实现中断返回指令 (IRET)
+- [ ] 实现中断嵌套优先级检查
 
 ## 2026-05-06: 安全域系统实现
 
 ### 新增文件
 - `rpa_sim/security_domain.py`: 安全域控制器模块
+- `rpa_sim/encrpted_memory.py`: 加密内存区域（XOR 模拟）
+- `tests/test_security_domain.py`: 安全域测试（19 个测试用例）
 
 ### 新增数据结构
 - `SecurityDomainConfig`: 安全域配置参数
 - `SecurityDomain`: 安全域实例
 - `SecurityDomainController`: 全局安全域控制器
+- `EncryptedRegion`: 加密内存区域
 
 ### DomainBlock 扩展字段
 | 偏移 | 字段 | 说明 |
@@ -258,30 +265,53 @@
 | 0x20 | security_domain | 安全域 handle |
 | 0x24 | access_id | 访问 ID (DMA 用) |
 
+**待解决问题**: 安全域字段 (0x20-0x27) 与 ISA saved_sp/saved_lr 偏移冲突。
+建议调整方案：
+1. 将 ISA 现场保存区移至 0x28 之后，或
+2. 将 security_domain/access_id 移至 DomainBlock 基本区域之后的扩展区
+
 ### sysop secdomain 子操作
 | 操作码 | 名称 | 说明 |
 |--------|------|------|
-| 0x01 | CREATE | 创建安全域 |
-| 0x02 | DESTROY | 销毁安全域 |
+| 0x01 | CREATE | 创建安全域（flags: isolated/encrypted/confidential） |
+| 0x02 | DESTROY | 销毁安全域（引用计数为 0） |
 | 0x03 | BIND | 绑定域到安全域 |
-| 0x04 | UNBIND | 解绑 |
-| 0x05 | GET_ID | 获取 domain_id |
-| 0x06 | SET_ENCRYPTION | 设置加密 |
+| 0x04 | UNBIND | 解绑域 |
+| 0x05 | GET_ID | 获取安全域的 domain_id |
+| 0x06 | SET_ENCRYPTION | 设置加密区域 |
 | 0x07 | ADD_ACCESSOR | 添加 DMA 访问者 |
 | 0x08 | REMOVE_ACCESSOR | 移除访问者 |
-| 0x09 | FORCE_DESTROY | 强制销毁（root only） |
+| 0x09 | FORCE_DESTROY | 强制销毁（仅 root 域） |
 | 0x0A | GET_HANDLE | 获取域的安全域 handle |
 
 ### 安全域特性
 1. **Handle-based 访问**: 安全域 handle 从 0x2000 开始分配
 2. **引用计数管理**: 绑定域时增加，解绑时减少
 3. **回收约束**: 引用计数为 0 才能销毁；root 可强制销毁
-4. **DMA 访问控制**: 同一安全域内允许；机密计算域禁止外部访问
+4. **DMA 访问控制**:
+   - 同一安全域内允许访问
+   - 在 allowed_accessors 列表中允许
+   - 机密计算域禁止外部访问
+   - root 域不能访问机密计算域
 5. **内存加密**: XOR 模拟加密，支持设置加密区域
+6. **机密计算**: 密钥由内建暗号机制生成，root 域知道哪层是机密域但无法设置密钥
 
 ### domain_id 分配
 - 无安全子系统: RPALogic 分配 (1, 2, 3...)
 - 有安全子系统: SecurityDomainController 分配 (0x0100 起)
+- 安全域 ID 与普通域 ID 分开管理，避免冲突
+
+### Memory 扩展
+- `Memory.set_encryption()`: 设置加密区域
+- `Memory.clear_encryption_by_handle()`: 清除安全域的所有加密区域
+- `Memory.get_encryption_region()`: 查询地址所属加密区域
+- `MemoryManager` 转发加密相关调用
+
+### DESCEND 集成
+- RPALogic.set_security_controller(): 设置安全域控制器
+- DESCEND 时自动绑定安全域
+- 支持继承父域安全域或创建新安全域
+- EXIT 时自动解绑安全域
 
 ## 已完成
 
@@ -304,7 +334,7 @@
 
 ### 2026-05-05: EXIT 指令实现
 - 新增 EXIT 指令：ESCALATE + 释放子域
-- EXIT 清空父子关系：parent.child_block = 0, child.parent_block = 0
+- EXIT 清空父子关系：parent.child_block = 0
 - EXIT 清空子域 domain_id
 - child_block 冲突检测：父域已有不同子域时报错
 - 测试覆盖 EXIT 场景
@@ -314,7 +344,6 @@
 - 移除 reserved/padding 字段
 - 添加 ctrlblock_size（必须设置，DESCEND时验证）
 - 添加 domain_id（系统分配）
-- 添加 parent_block（可选）
 - 大小从 128 字节改为 32 字节
 - 对齐从 64 字节改为 32 字节
 - 移除 ISA 上下文保存（ISA自行管理）
@@ -324,6 +353,19 @@
 - rpa 参数变为必需
 - 移除 descend_handler, escalate_handler, return_handler 回调
 - 保留 sysop_handler, fault_handler 用于扩展
+
+### 2026-05-07: 移除 parent_block 字段
+- parent_block 字段未被实际使用（域导航通过 Python 对象引用）
+- OFFSET_PARENT_BLOCK 改为 OFFSET_RESERVED_18（保留）
+- DomainBlock.parent_block 字段移除
+- 简化 descend/escalate 中的内存写入逻辑
+
+### 2026-05-07: ISA 上下文保存区偏移调整
+- 解决 security_domain/access_id (0x20-0x27) 与 ISA 保存区冲突
+- ISA 保存区从 0x20 移至 0x28
+- SAVED_SP_OFFSET: 0x20 → 0x28
+- SAVED_LR_OFFSET: 0x24 → 0x2C
+- SAVED_PSR_OFFSET: 0x28 → 0x30
 
 ### 2026-05-01: 清理别名和冗余字段
 - 删除 pagetable_addr 字段（与 memtable_addr 重复）
@@ -342,3 +384,114 @@
 - 完成 DomainBlock 结构定义（128字节）
 - 定义 memtable 结构
 - 定义 sysop irq/memtable 指令
+
+## 2026-05-07: 地址空间与控制块语义澄清
+
+### 控制块位置与所有权
+
+**关键原则**：控制块 (Control Block) 由父域创建，存放在父域地址空间。
+
+```
+父域地址空间
+├── control_block_A (为子域A创建)
+│   ├── exception_vector    ← 子域可通过 SYSOP 修改
+│   ├── interrupt_ctrl      ← 子域可通过 SYSOP 操作
+│   ├── memtable_address    ← 定义子域可见的地址范围
+│   ├── saved_sp/lr/psr     ← 硬件自动保存上下文
+│   └── ...
+├── control_block_B (为子域B创建)
+└── 父域代码/数据
+
+子域地址空间 (通过 memtable 映射的父域空间子集)
+├── 子域代码
+├── 子域数据
+└── 子域页表 (存放在 IPA 空间)
+```
+
+**子域无法直接访问控制块**：
+- 控制块在父域地址空间
+- 子域通过 SYSOP 让硬件代理操作
+- SYSOP 操作结果直接写入父域空间（通过 current_block 寄存器定位）
+
+### 地址空间层次
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 真实物理地址 (PA)                                           │
+│   ← 根域页表翻译                                            │
+├─────────────────────────────────────────────────────────────┤
+│ 父域地址空间 (父域视角的"物理地址")                          │
+│   ← 父域页表翻译（如果有）                                   │
+│   ← 子域 memtable 定义的子集                                │
+├─────────────────────────────────────────────────────────────┤
+│ 子域"物理地址" (IPA = Intermediate Physical Address)         │
+│   ← 子域页表翻译                                            │
+├─────────────────────────────────────────────────────────────┤
+│ 子域虚拟地址 (VA)                                           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**翻译链**：VA → IPA（子域页表）→ PA（父域 memtable）
+
+**页表位置**：
+- 子域页表存放在 IPA 空间（父域暴露给子域的区域）
+- 子域写入页表基址寄存器的是 IPA 地址
+- 父域 memtable 将 IPA 翻译为 PA
+
+### IPA 边界检查
+
+**问题**：子域需要知道可用地址范围，硬件需要检查访问是否越界。
+
+**解决方案**：
+
+1. **硬件检查**：翻译时检查 IPA 是否在 memtable 范围内
+   - 在范围内：继续翻译
+   - 超出范围：触发 fault
+
+2. **软件查询**：子域通过 SYSOP 获取可用范围
+   - `SYSOP memtable, query_range, Rd` 返回 ipa_base/size
+   - 用于显示可用内存、规划页表布局等
+
+**新增控制块字段**：
+| 偏移 | 字段 | 说明 |
+|------|------|------|
+| 0x24 | ipa_base | 可用 IPA 起始地址（父域设置） |
+| 0x28 | ipa_size | 可用 IPA 大小（父域设置） |
+
+注意：这两个字段与 ISA saved_* 区域冲突，需要调整偏移。
+
+### 硬件控制块模型
+
+**原设想（已废弃）**：
+- 硬件维护控制块栈，每个域占用固定位置
+- 软件切换时复制数据到硬件控制块
+
+**现在设计**：
+- 硬件只维护 `current_block` 指针寄存器
+- 控制块数据完全在内存
+- DESCEND 时更新指针，硬件按指针访问控制块
+
+**优势**：
+- 简化硬件设计
+- 软件灵活控制控制块位置
+- 父域可以预先创建多个控制块
+
+### 上下文保存策略
+
+| 层面 | 策略 |
+|------|------|
+| 论文 | ISA + 调用标准决定（规范层面） |
+| 实现 | 硬件自动备份 R0-R15, SP, LR, PSR（简化软件） |
+
+**实现细节**：
+- DESCEND：硬件保存父域上下文到父域控制块
+- ESCALATE：硬件保存子域上下文到子域控制块
+- RETURN：硬件恢复子域上下文
+- 中断：硬件保存上下文到中断保存区
+
+### 待调整
+
+- [ ] 调整控制块偏移，增加 ipa_base/ipa_size 字段
+- [ ] 实现 `SYSOP memtable, query_range` 指令
+- [ ] 实现翻译时的 IPA 边界检查
+- [ ] 更新测试覆盖新功能
