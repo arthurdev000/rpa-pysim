@@ -10,17 +10,17 @@ Memory Manager - Physical memory and page table simulation
 
 页表叠加：
 - 每层的页表翻译上一层返回的"物理地址"
-- 翻译失败时，异常归属 memtable_address 所属的域
+- 翻译失败时，异常归属 pagetable 所属的域
 - 实现 RPA 的地址空间隔离机制
 
 翻译链示例：
     Domain 2 访问 VA2:
-      ipa2 = translate(domain2.memtable_addr, va2)
-           - 访问页表数据需要用 domain1.memtable_addr 翻译
+      ipa2 = translate(domain2.pagetable, va2)
+           - 访问页表数据需要用 domain1.pagetable 翻译
            - 失败 → 报给 domain2
-      ipa1 = translate(domain1.memtable_addr, ipa2)
+      ipa1 = translate(domain1.pagetable, ipa2)
            - 失败 → 报给 domain1
-      pa = translate(domain0.memtable_addr, ipa1)
+      pa = translate(domain0.pagetable, ipa1)
            - 失败 → 报给 domain0 (root)
       访问 pa → 总线错误
 """
@@ -504,14 +504,14 @@ class MemoryManager:
     内存管理器，支持页表叠加。
 
     翻译规则：
-    - memtable_address = 0：跳过本层，继承父域地址空间
-    - memtable_address != 0：用该页表翻译，失败报给本域
+    - pagetable = 0：跳过本层，继承父域地址空间
+    - pagetable != 0：用该页表翻译，失败报给本域
 
     翻译链示例：
         Domain 2 访问 VA:
-        1. 用 domain2.memtable_addr 的页表翻译 → 失败报给 domain2
-        2. 用 domain1.memtable_addr 的页表翻译 → 失败报给 domain1
-        3. 用 domain0.memtable_addr 的页表翻译 → 失败报给 domain0
+        1. 用 domain2.pagetable 的页表翻译 → 失败报给 domain2
+        2. 用 domain1.pagetable 的页表翻译 → 失败报给 domain1
+        3. 用 domain0.pagetable 的页表翻译 → 失败报给 domain0
         4. 访问最终物理地址 → 失败报总线错误
     """
 
@@ -523,13 +523,13 @@ class MemoryManager:
             physical_memory: 物理内存实例，默认创建1MB内存
         """
         self.physical_memory = physical_memory or Memory(1024 * 1024)
-        # memtable_addr -> PageTable
+        # pagetable_addr -> PageTable
         self.page_tables: Dict[int, PageTable] = {}
 
         # 安全域控制器引用
         self.security_controller: Optional['SecurityDomainController'] = None
 
-        # 页表到安全域的映射: memtable_addr -> security_handle
+        # 页表到安全域的映射: pagetable_addr -> security_handle
         self.page_table_security: Dict[int, int] = {}
 
     def set_security_controller(self, controller: 'SecurityDomainController') -> None:
@@ -539,15 +539,15 @@ class MemoryManager:
         if controller:
             controller.memory_manager = self
 
-    def bind_page_table_to_security(self, memtable_addr: int, security_handle: int) -> None:
+    def bind_page_table_to_security(self, pagetable_addr: int, security_handle: int) -> None:
         """
         将页表绑定到安全域。
 
         Args:
-            memtable_addr: 页表基址
+            pagetable_addr: 页表基址
             security_handle: 安全域 handle
         """
-        self.page_table_security[memtable_addr] = security_handle
+        self.page_table_security[pagetable_addr] = security_handle
 
     def set_encryption(self, start: int, size: int, security_handle: int, key: int) -> None:
         """
@@ -579,7 +579,7 @@ class MemoryManager:
         创建页表。
 
         Args:
-            base_addr: 页表基址（memtable_address）
+            base_addr: 页表基址（pagetable）
             page_size: 页大小
             owner_domain: 页表所属的域 ID
 
@@ -590,18 +590,18 @@ class MemoryManager:
         self.page_tables[base_addr] = pt
         return pt
 
-    def get_page_table(self, memtable_addr: int) -> Optional[PageTable]:
+    def get_page_table(self, pagetable_addr: int) -> Optional[PageTable]:
         """获取页表"""
-        return self.page_tables.get(memtable_addr)
+        return self.page_tables.get(pagetable_addr)
 
-    def translate_chain(self, va: int, memtable_chain: List[int]) -> TranslationResult:
+    def translate_chain(self, va: int, pagetable_chain: List[int]) -> TranslationResult:
         """
-        沿着 memtable 链翻译地址。
+        沿着页表链翻译地址。
 
         Args:
             va: 虚拟地址
-            memtable_chain: 从当前域到根域的 memtable_address 列表
-                           [domain_n.memtable_addr, domain_n-1.memtable_addr, ..., domain_0.memtable_addr]
+            pagetable_chain: 从当前域到根域的 pagetable 地址列表
+                           [domain_n.pagetable, domain_n-1.pagetable, ..., domain_0.pagetable]
 
         Returns:
             TranslationResult 包含物理地址、权限和异常信息
@@ -610,17 +610,17 @@ class MemoryManager:
         # 权限从最宽松开始，每层翻译可能会限制
         r, w, x, c = True, True, True, False
 
-        for memtable_addr in memtable_chain:
-            # memtable_addr = 0 表示跳过本层翻译
-            if memtable_addr == 0:
+        for pagetable_addr in pagetable_chain:
+            # pagetable_addr = 0 表示跳过本层翻译
+            if pagetable_addr == 0:
                 continue
 
-            pt = self.page_tables.get(memtable_addr)
+            pt = self.page_tables.get(pagetable_addr)
             if pt is None:
                 # 页表不存在，返回异常
                 return TranslationResult(
                     pa=current_addr,
-                    fault_owner=memtable_addr  # 用 memtable_addr 作为临时标识
+                    fault_owner=pagetable_addr  # 用 pagetable_addr 作为临时标识
                 )
 
             # 翻译
@@ -652,14 +652,14 @@ class MemoryManager:
             fault_owner=None
         )
 
-    def read_with_translation(self, va: int, memtable_chain: List[int],
+    def read_with_translation(self, va: int, pagetable_chain: List[int],
                               size: int = 4) -> Tuple[int, Optional[int]]:
         """
         带翻译和权限检查的读取。
 
         Args:
             va: 虚拟地址
-            memtable_chain: memtable 地址链
+            pagetable_chain: 页表地址链
             size: 读取大小（1/2/4 字节）
 
         Returns:
@@ -669,7 +669,7 @@ class MemoryManager:
             PermissionError: 权限不足（不可读或访问控制区域）
             BusError: 物理地址访问失败
         """
-        result = self.translate_chain(va, memtable_chain)
+        result = self.translate_chain(va, pagetable_chain)
         if result.fault_owner is not None:
             return (0, result.fault_owner)
 
@@ -693,14 +693,14 @@ class MemoryManager:
             raise BusError(result.pa)
 
     def write_with_translation(self, va: int, value: int,
-                               memtable_chain: List[int], size: int = 4) -> Optional[int]:
+                               pagetable_chain: List[int], size: int = 4) -> Optional[int]:
         """
         带翻译和权限检查的写入。
 
         Args:
             va: 虚拟地址
             value: 要写入的值
-            memtable_chain: memtable 地址链
+            pagetable_chain: 页表地址链
             size: 写入大小（1/2/4 字节）
 
         Returns:
@@ -710,7 +710,7 @@ class MemoryManager:
             PermissionError: 权限不足（不可写或访问控制区域）
             BusError: 物理地址访问失败
         """
-        result = self.translate_chain(va, memtable_chain)
+        result = self.translate_chain(va, pagetable_chain)
         if result.fault_owner is not None:
             return result.fault_owner
 
@@ -734,17 +734,17 @@ class MemoryManager:
         except MemoryError:
             raise BusError(result.pa)
 
-    def dump_mappings(self, memtable_addr: int) -> Dict:
+    def dump_mappings(self, pagetable_addr: int) -> Dict:
         """
         转储页表映射。
 
         Returns:
             映射信息字典
         """
-        if memtable_addr == 0:
+        if pagetable_addr == 0:
             return {"mode": "inherit"}
 
-        pt = self.page_tables.get(memtable_addr)
+        pt = self.page_tables.get(pagetable_addr)
         if pt is None:
             return {}
 

@@ -14,9 +14,9 @@ DomainBlock 内存布局 (32 位实现, 4 字节宽度):
     │ 0x04     │ exception_vector    异常向量 (ESCALATE 跳转地址)       │
     │ 0x08     │ reserved            保留                               │
     │ 0x0C     │ interrupt_ctrl      中断控制器 handle                  │
-    │ 0x10     │ memtable_address    内存翻译表地址                     │
+    │ 0x10     │ ipa_regions         IPA 区域表地址 (父域设置，只读)    │
     │ 0x14     │ domain_id           域ID (系统分配)                    │
-    │ 0x18     │ reserved            保留                               │
+    │ 0x18     │ pagetable           页表地址 (子域设置，可写)          │
     │ 0x1C     │ child_block         子域控制块地址                     │
     │ 0x20     │ security_domain     安全域 handle                      │
     │ 0x24     │ access_id           访问 ID (DMA 用)                   │
@@ -35,6 +35,18 @@ DomainBlock 内存布局 (32 位实现, 4 字节宽度):
     │ ...      │ ...                                                     │
     │ 0x7C     │ irq_saved_pc        中断保存 PC                        │
     │ 0x80     │ irq_saved_psr       中断保存 PSR                       │
+    └──────────┴────────────────────────────────────────────────────────┘
+
+IPA 区域表 / 页表条目格式:
+==========================
+
+每个条目 12 字节，以全零条目结尾：
+    ┌──────────┬────────────────────────────────────────────────────────┐
+    │ 偏移     │ 字段                                                   │
+    ├──────────┼────────────────────────────────────────────────────────┤
+    │ 0x00     │ base                基地址                             │
+    │ 0x04     │ size                大小                               │
+    │ 0x08     │ attr                属性 (r/w/x/device 等)             │
     └──────────┴────────────────────────────────────────────────────────┘
 
 支持的指令:
@@ -74,7 +86,8 @@ RPA 指令：DESCEND, ESCALATE, RETURN, SYSOP
     │  LDR/STR    │      │ chain        │      │  read/write │
     └─────────────┘      └─────────────┘      └─────────────┘
 
-    memtable_chain = [domain_n.memtable, ..., domain_0.memtable]
+    pagetable_chain = [domain_n.pagetable, ..., domain_0.pagetable]
+    ipa_regions = 当前域的 IPA 约束 (用于边界检查)
     翻译失败 → TranslationError(memtable_owner)
 
 中断处理:
@@ -474,11 +487,12 @@ class SimpleISA:
     简化指令集核心。
 
     LDR/STR 通过 MemoryManager 进行地址翻译:
-    - memtable_chain 保存当前域的页表链
+    - pagetable_chain 保存当前域的页表链
+    - ipa_regions 保存当前域的 IPA 约束
     - 翻译失败触发 TranslationError (包含 fault_owner)
 
     DESCEND/ESCALATE/RETURN 指令:
-    - DESCEND: 读取 DomainBlock，跳转到 saved_lr (0x24)
+    - DESCEND: 读取 DomainBlock，跳转到 saved_lr (0x2C)
     - ESCALATE: 保存上下文，切换到父域
     - RETURN: 从控制块恢复上下文
 
@@ -506,9 +520,12 @@ class SimpleISA:
         self.interrupt_controller = interrupt_controller
         self.security_controller = security_controller
 
-        # 当前 Domain 的 memtable 翻译链
-        # [domain_n.memtable, ..., domain_0.memtable]
-        self.memtable_chain: List[int] = []
+        # 当前 Domain 的页表翻译链
+        # [domain_n.pagetable, ..., domain_0.pagetable]
+        self.pagetable_chain: List[int] = []
+
+        # 当前 Domain 的 IPA 约束 (父域设置的地址范围)
+        self.ipa_regions: int = 0
 
         # 当前 Domain 的控制块地址
         self.domain_block_addr: int = 0
@@ -690,9 +707,9 @@ class SimpleISA:
 
         try:
             # 使用 MemoryManager 进行带翻译的读取
-            if self.memory_manager and len(self.memtable_chain) > 0:
+            if self.memory_manager and len(self.pagetable_chain) > 0:
                 value, fault_owner = self.memory_manager.read_with_translation(
-                    va, self.memtable_chain, size=4
+                    va, self.pagetable_chain, size=4
                 )
                 if fault_owner is not None:
                     # 翻译失败，触发异常
@@ -738,9 +755,9 @@ class SimpleISA:
 
         try:
             # 使用 MemoryManager 进行带翻译的写入
-            if self.memory_manager and len(self.memtable_chain) > 0:
+            if self.memory_manager and len(self.pagetable_chain) > 0:
                 fault_owner = self.memory_manager.write_with_translation(
-                    va, value, self.memtable_chain, size=4
+                    va, value, self.pagetable_chain, size=4
                 )
                 if fault_owner is not None:
                     # 翻译失败，触发异常
@@ -1045,7 +1062,7 @@ class SimpleISA:
         4. 跳转到 saved_lr (统一入口)
            - 首次: 父域在 DESCEND 前写入入口地址到 saved_lr
            - 后续: ESCALATE 已保存返回地址到 saved_lr
-        5. 更新 memtable_chain
+        5. 更新 pagetable_chain 和 ipa_regions
 
         注意：首次和后续 DESCEND 统一使用 saved_lr 作为入口点
         """
@@ -1053,7 +1070,8 @@ class SimpleISA:
 
         # 通过 RPALogic 切换域（首次创建或后续复用）
         result = self.rpa.descend(block_addr)
-        memtable = result.get("memtable", 0)
+        pagetable = result.get("pagetable", 0)
+        ipa_regions = result.get("ipa_regions", 0)
 
         # RTL 调用 ISA 接口（清空寄存器、恢复上下文）
         self.prepare_descend(block_addr)
@@ -1063,9 +1081,10 @@ class SimpleISA:
         # 后续 DESCEND: ESCALATE 已保存返回地址到 saved_lr
         self.state.pc = self.state.lr
 
-        # 更新 memtable_chain
-        if memtable != 0:
-            self.memtable_chain = [memtable] + self.memtable_chain
+        # 更新页表链和 IPA 区域
+        if pagetable != 0:
+            self.pagetable_chain = [pagetable] + self.pagetable_chain
+        self.ipa_regions = ipa_regions  # 当前域的 IPA 约束
         # 更新 domain_block_addr
         self.domain_block_addr = block_addr
 
@@ -1095,9 +1114,12 @@ class SimpleISA:
             self.state.pc = vector
         else:
             self.halted = True
-        # 更新 memtable_chain（移除当前域的页表）
-        if self.memtable_chain:
-            self.memtable_chain = self.memtable_chain[1:]
+        # 更新页表链（移除当前域的页表）
+        if self.pagetable_chain:
+            self.pagetable_chain = self.pagetable_chain[1:]
+        # 恢复父域的 IPA 约束
+        parent_block = self.rpa.current_domain.block
+        self.ipa_regions = parent_block.ipa_regions if parent_block else 0
         # 更新 domain_block_addr 为父域
         self.domain_block_addr = self.rpa.current_domain.block_addr
 
@@ -1196,7 +1218,8 @@ class SimpleISA:
             "flags": {"N": self.state.n, "Z": self.state.z, "C": self.state.c, "V": self.state.v},
             "pc": hex(self.state.pc),
             "halted": self.halted,
-            "memtable_chain": [hex(m) for m in self.memtable_chain],
+            "pagetable_chain": [hex(m) for m in self.pagetable_chain],
+            "ipa_regions": hex(self.ipa_regions),
         }
 
     def get_execution_log(self) -> List[Dict]:

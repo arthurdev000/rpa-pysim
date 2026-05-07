@@ -162,8 +162,8 @@ class TestMemoryTranslation:
         # 写入数据到物理地址
         mem.write_word(0x2000, 0xDEADBEEF)
 
-        # 设置 memtable_chain
-        core.memtable_chain = [0x10000]
+        # 设置 pagetable_chain
+        core.pagetable_chain = [0x10000]
 
         # 测试 LDR
         core.load_assembly("""
@@ -187,7 +187,7 @@ class TestMemoryTranslation:
         pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
         pt.map(0x1000, 0x2000)
 
-        core.memtable_chain = [0x10000]
+        core.pagetable_chain = [0x10000]
 
         core.load_assembly("""
             MOV R0, #0xCAFEBABE

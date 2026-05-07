@@ -442,23 +442,32 @@
 
 **问题**：子域需要知道可用地址范围，硬件需要检查访问是否越界。
 
-**解决方案**：
+**memtable 结构**：
+- memtable 存放在**父域地址空间**
+- 是一个**动态表**，可以有多个条目
+- 控制块的 `memtable_address` 字段保存表首地址
+- 每个条目定义一段可访问的地址范围
 
-1. **硬件检查**：翻译时检查 IPA 是否在 memtable 范围内
-   - 在范围内：继续翻译
-   - 超出范围：触发 fault
+**字段分离**（安全设计）：
 
-2. **软件查询**：子域通过 SYSOP 获取可用范围
-   - `SYSOP memtable, query_range, Rd` 返回 ipa_base/size
-   - 用于显示可用内存、规划页表布局等
+为防止子域绕过约束，控制块使用两个独立字段：
 
-**新增控制块字段**：
-| 偏移 | 字段 | 说明 |
-|------|------|------|
-| 0x24 | ipa_base | 可用 IPA 起始地址（父域设置） |
-| 0x28 | ipa_size | 可用 IPA 大小（父域设置） |
+| 字段 | 设置者 | 权限 | 用途 |
+|------|--------|------|------|
+| ipa_regions | 父域 | 子域只读 | 定义可用的 IPA 范围约束 |
+| pagetable | 子域 | 子域可写 | 子域创建的 VA→IPA 页表 |
 
-注意：这两个字段与 ISA saved_* 区域冲突，需要调整偏移。
+子域创建页表时，硬件检查 IPA 是否在 ipa_regions 范围内。
+
+**硬件检查**：翻译时检查 IPA 是否在 memtable 定义的范围内
+- 在范围内：继续翻译
+- 超出范围：触发 fault
+
+**软件查询**：子域通过 SYSOP 遍历/查询 memtable
+- `SYSOP memtable, query` 获取可用地址范围信息
+- 用于显示可用内存、规划页表布局等
+
+**注意**：不需要在控制块中新增 ipa_base/ipa_size 字段，因为 memtable 是动态多条目表。
 
 ### 硬件控制块模型
 
@@ -491,7 +500,48 @@
 
 ### 待调整
 
-- [ ] 调整控制块偏移，增加 ipa_base/ipa_size 字段
-- [ ] 实现 `SYSOP memtable, query_range` 指令
-- [ ] 实现翻译时的 IPA 边界检查
+- [ ] 实现 `SYSOP memtable, query` 指令（子域查询可用地址范围）
+- [ ] 实现翻译时的 IPA 边界检查（超出 memtable 范围触发 fault）
+- [ ] 完善内存区域表的数据结构（docs/CONTROL_BLOCK_SPEC.md 已定义格式）
 - [ ] 更新测试覆盖新功能
+
+## 2026-05-07: 命名重构 memtable_address → ipa_regions, memtable_chain → pagetable_chain
+
+### 安全设计背景
+
+原设计中 `memtable_address` 字段存在安全隐患：
+- 子域可以修改该字段绕过父域设置的 IPA 约束
+- 需要分离为两个字段：父域设置（只读）+ 子域设置（可写）
+
+### 已完成的命名变更
+
+| 旧名 | 新名 | 位置 | 说明 |
+|------|------|------|------|
+| memtable_address | ipa_regions | DomainBlock offset 0x10 | 父域设置，子域只读 |
+| memtable_chain | pagetable_chain | SimpleISA 变量 | 页表翻译链 |
+| (新增) | pagetable | DomainBlock offset 0x18 | 子域设置，子域可写 |
+
+### 已修改文件
+
+- `rpa_sim/memory.py`: 函数参数名 memtable_chain → pagetable_chain
+- `rpa_sim/isa_simple.py`: 变量名和注释
+- `rpa_sim/machine.py`: 方法名 get_memtable_chain → get_pagetable_chain
+- `tests/test_rpa.py`: 所有引用
+- `tests/test_isa_simple.py`: 所有引用
+- `tests/test_thread_exception.py`: 大部分引用
+- `README.md`: DomainBlock 字段表
+- `docs/CONTROL_BLOCK_SPEC.md`: 字段定义和说明
+
+### 待修复测试
+
+`tests/test_thread_exception.py::TestMemoryTranslation::test_descend_with_memtable` 测试失败：
+- 测试名需要改为 `test_descend_with_pagetable`
+- 测试逻辑需要调整：DESCEND 时应更新 pagetable_chain
+- 预期值 0x12345678，实际值 2048 (0x800)
+- 可能原因：DESCEND 后 pagetable_chain 未正确更新，或页表翻译链配置问题
+
+### 下一步
+
+1. 调试 test_descend_with_memtable 失败原因
+2. 确认 DESCEND 时 pagetable_chain 的更新逻辑
+3. 考虑 offset 0x18 的 pagetable 字段如何在 DESCEND/ESCALATE 中使用
