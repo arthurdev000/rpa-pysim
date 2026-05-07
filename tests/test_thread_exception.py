@@ -336,9 +336,13 @@ class TestMemoryTranslation:
         assert mem.read_word(0x2000) == 0xCAFEBABE
         assert mem.read_word(0x1000) == 0
 
-    def test_descend_with_memtable(self):
+    def test_descend_with_pagetable(self):
         """
         DESCEND 带页表，子域使用独立的地址空间
+
+        父域为子域设置页表地址，子域通过页表翻译访问内存。
+        - ipa_regions (0x10): IPA 区域约束（父域设置，子域只读）
+        - pagetable (0x18): 页表地址（子域可写，但父域也可预设）
         """
         mem = Memory(size=64 * 1024)
         mm = MemoryManager(physical_memory=mem)
@@ -357,7 +361,8 @@ class TestMemoryTranslation:
         block_addr = 0x0800
         mem.write_word(block_addr + OFFSET_CTRLBLOCK_SIZE, CTRLBLOCK_SIZE)
         mem.write_word(block_addr + OFFSET_EXCEPTION_VECTOR, 0)
-        mem.write_word(block_addr + OFFSET_IPA_REGIONS, 0x20000)
+        mem.write_word(block_addr + OFFSET_IPA_REGIONS, 0)       # ipa_regions = 0 (无约束)
+        mem.write_word(block_addr + OFFSET_PAGETABLE, 0x20000)   # pagetable = Domain 1 的页表
         mem.write_word(block_addr + OFFSET_SAVED_LR, 0x2000)
 
         rpa = RPALogic()
@@ -722,8 +727,352 @@ class TestPermissionChecking:
             HALT
         """, base_addr=0x3000)
 
-        core.state.pc = 0x3000
+
+class TestSysopMemtable:
+    """
+    测试 sysop memtable 指令
+    """
+
+    def test_sysop_memtable_query(self):
+        """
+        sysop memtable, query, #index, #regmask 查询 IPA 区域表
+        """
+        mem = Memory(size=128 * 1024)  # 128KB
+
+        # 创建 IPA 区域表 (3 个条目 + 结束标记)
+        # 条目格式: base(4) + size(4) + attr(4) = 12 字节
+        table_addr = 0x10000
+        # 条目 0: base=0x0000, size=0x1000, attr=0x07 (rwx)
+        mem.write_word(table_addr + 0, 0x0000)
+        mem.write_word(table_addr + 4, 0x1000)
+        mem.write_word(table_addr + 8, 0x07)
+        # 条目 1: base=0x2000, size=0x2000, attr=0x03 (rw)
+        mem.write_word(table_addr + 12, 0x2000)
+        mem.write_word(table_addr + 16, 0x2000)
+        mem.write_word(table_addr + 20, 0x03)
+        # 条目 2: base=0x8000, size=0x1000, attr=0x05 (rx)
+        mem.write_word(table_addr + 24, 0x8000)
+        mem.write_word(table_addr + 28, 0x1000)
+        mem.write_word(table_addr + 32, 0x05)
+        # 结束标记
+        mem.write_word(table_addr + 36, 0)
+        mem.write_word(table_addr + 40, 0)
+        mem.write_word(table_addr + 44, 0)
+
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem)
+        core.ipa_regions = table_addr
+
+        # 查询条目 1，结果存入 R0=base, R1=size, R2=attr
+        # regmask = 0b00000111 = 0x07 (R0, R1, R2)
+        core.load_assembly("""
+            SYSOP memtable, query, #1, #0x07
+            HALT
+        """, base_addr=0x0000)
+
+        core.state.pc = 0x0000
         core.run()
 
-        assert mem.read_word(0x2000) == 0xCAFEBABE
-        assert core.state.get_reg(3) == 0xCAFEBABE
+        assert core.state.get_reg(0) == 0x2000  # base
+        assert core.state.get_reg(1) == 0x2000  # size
+        assert core.state.get_reg(2) == 0x03    # attr
+
+    def test_sysop_memtable_query_different_regs(self):
+        """
+        使用不同的寄存器掩码
+        """
+        mem = Memory(size=128 * 1024)
+
+        table_addr = 0x10000
+        # 条目 0: base=0x1000, size=0x2000, attr=0x0F
+        mem.write_word(table_addr + 0, 0x1000)
+        mem.write_word(table_addr + 4, 0x2000)
+        mem.write_word(table_addr + 8, 0x0F)
+        # 结束标记
+        mem.write_word(table_addr + 12, 0)
+        mem.write_word(table_addr + 16, 0)
+        mem.write_word(table_addr + 20, 0)
+
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem)
+        core.ipa_regions = table_addr
+
+        # 使用 regmask = 0b00111000 = 0x38 (R3, R4, R5)
+        # base -> R3, size -> R4, attr -> R5
+        core.load_assembly("""
+            SYSOP memtable, query, #0, #0x38
+            HALT
+        """, base_addr=0x0000)
+
+        core.state.pc = 0x0000
+        core.run()
+
+        assert core.state.get_reg(3) == 0x1000  # base
+        assert core.state.get_reg(4) == 0x2000  # size
+        assert core.state.get_reg(5) == 0x0F    # attr
+
+    def test_sysop_memtable_count(self):
+        """
+        sysop memtable, count, Rd 返回条目数
+        """
+        mem = Memory(size=128 * 1024)
+
+        table_addr = 0x10000
+        # 条目 0
+        mem.write_word(table_addr + 0, 0x0000)
+        mem.write_word(table_addr + 4, 0x1000)
+        mem.write_word(table_addr + 8, 0x07)
+        # 条目 1
+        mem.write_word(table_addr + 12, 0x2000)
+        mem.write_word(table_addr + 16, 0x2000)
+        mem.write_word(table_addr + 20, 0x03)
+        # 结束标记
+        mem.write_word(table_addr + 24, 0)
+        mem.write_word(table_addr + 28, 0)
+        mem.write_word(table_addr + 32, 0)
+
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem)
+        core.ipa_regions = table_addr
+
+        core.load_assembly("""
+            SYSOP memtable, count, R4
+            HALT
+        """, base_addr=0x0000)
+
+        core.state.pc = 0x0000
+        core.run()
+
+        assert core.state.get_reg(4) == 2  # 2 个条目
+
+    def test_sysop_memtable_query_out_of_range(self):
+        """
+        查询超出范围的条目返回全零
+        """
+        mem = Memory(size=128 * 1024)
+
+        table_addr = 0x10000
+        # 只有 1 个条目
+        mem.write_word(table_addr + 0, 0x1000)
+        mem.write_word(table_addr + 4, 0x2000)
+        mem.write_word(table_addr + 8, 0x07)
+        # 结束标记
+        mem.write_word(table_addr + 12, 0)
+        mem.write_word(table_addr + 16, 0)
+        mem.write_word(table_addr + 20, 0)
+
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem)
+        core.ipa_regions = table_addr
+
+        # 查询条目 5 (不存在)
+        core.load_assembly("""
+            SYSOP memtable, query, #5, #0x07
+            HALT
+        """, base_addr=0x0000)
+
+        core.state.pc = 0x0000
+        core.run()
+
+        assert core.state.get_reg(0) == 0  # base
+        assert core.state.get_reg(1) == 0  # size
+        assert core.state.get_reg(2) == 0  # attr
+
+    def test_sysop_memtable_query_no_table(self):
+        """
+        ipa_regions 为 0 时返回全零
+        """
+        mem = Memory(size=64 * 1024)
+
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem)
+        core.ipa_regions = 0  # 无 IPA 区域表
+
+        core.load_assembly("""
+            SYSOP memtable, query, #0, #0x07
+            HALT
+        """, base_addr=0x0000)
+
+        core.state.pc = 0x0000
+        core.run()
+
+        assert core.state.get_reg(0) == 0
+        assert core.state.get_reg(1) == 0
+        assert core.state.get_reg(2) == 0
+
+
+class TestIPABoundsChecking:
+    """
+    测试 IPA 边界检查
+    """
+
+    def test_ipa_within_bounds(self):
+        """
+        IPA 在允许范围内，访问成功
+        """
+        mem = Memory(size=256 * 1024)  # 256KB
+        mm = MemoryManager(physical_memory=mem)
+
+        # 创建页表
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
+        pt.map(0x1000, 0x3000)  # VA 0x1000 -> IPA 0x3000
+
+        # 创建 IPA 区域表：允许 0x2000-0x5000
+        ipa_regions = 0x20000
+        mem.write_word(ipa_regions + 0, 0x2000)  # base
+        mem.write_word(ipa_regions + 4, 0x3000)  # size
+        mem.write_word(ipa_regions + 8, 0x07)    # attr
+        # 结束标记
+        mem.write_word(ipa_regions + 12, 0)
+        mem.write_word(ipa_regions + 16, 0)
+        mem.write_word(ipa_regions + 20, 0)
+
+        # 在 PA 0x3000 写入数据
+        mem.write_word(0x3000, 0xDEADBEEF)
+
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
+        core.pagetable_chain = [0x10000]
+        core.ipa_regions = ipa_regions
+
+        core.load_assembly("""
+            MOV R1, #0x1000
+            LDR R0, [R1]
+            HALT
+        """, base_addr=0x0000)
+
+        core.state.pc = 0x0000
+        core.run()
+
+        # IPA 0x3000 在允许范围 0x2000-0x5000 内，访问成功
+        assert core.state.get_reg(0) == 0xDEADBEEF
+
+    def test_ipa_out_of_bounds(self):
+        """
+        IPA 超出允许范围，触发 fault
+        """
+        mem = Memory(size=256 * 1024)  # 256KB
+        mm = MemoryManager(physical_memory=mem)
+
+        # 创建页表
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
+        pt.map(0x1000, 0x6000)  # VA 0x1000 -> IPA 0x6000 (超出范围)
+
+        # 创建 IPA 区域表：只允许 0x2000-0x5000
+        ipa_regions = 0x20000
+        mem.write_word(ipa_regions + 0, 0x2000)  # base
+        mem.write_word(ipa_regions + 4, 0x3000)  # size
+        mem.write_word(ipa_regions + 8, 0x07)    # attr
+        # 结束标记
+        mem.write_word(ipa_regions + 12, 0)
+        mem.write_word(ipa_regions + 16, 0)
+        mem.write_word(ipa_regions + 20, 0)
+
+        # 在 PA 0x6000 写入数据（虽然存在，但 IPA 不允许）
+        mem.write_word(0x6000, 0xDEADBEEF)
+
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
+        core.pagetable_chain = [0x10000]
+        core.ipa_regions = ipa_regions
+
+        core.load_assembly("""
+            MOV R1, #0x1000
+            LDR R0, [R1]
+            HALT
+        """, base_addr=0x0000)
+
+        fault_info = {}
+
+        def on_fault(fault_type, va, owner):
+            fault_info['type'] = fault_type
+            fault_info['va'] = va
+            fault_info['owner'] = owner
+            core.halted = True
+
+        core.fault_handler = on_fault
+        core.state.pc = 0x0000
+        core.run()
+
+        # IPA 0x6000 超出允许范围，应触发 fault
+        assert fault_info['type'] == 'translation'
+        assert fault_info['va'] == 0x1000
+
+    def test_ipa_no_regions_table(self):
+        """
+        没有 IPA 区域表（ipa_regions=0），不进行边界检查
+        """
+        mem = Memory(size=128 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+
+        # 创建页表
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
+        pt.map(0x1000, 0x6000)  # VA 0x1000 -> IPA 0x6000
+
+        # 不设置 ipa_regions (ipa_regions=0)
+
+        # 在 PA 0x6000 写入数据
+        mem.write_word(0x6000, 0xCAFEBABE)
+
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
+        core.pagetable_chain = [0x10000]
+        core.ipa_regions = 0  # 无边界检查
+
+        core.load_assembly("""
+            MOV R1, #0x1000
+            LDR R0, [R1]
+            HALT
+        """, base_addr=0x0000)
+
+        core.state.pc = 0x0000
+        core.run()
+
+        # 无边界检查，访问成功
+        assert core.state.get_reg(0) == 0xCAFEBABE
+
+    def test_ipa_multiple_regions(self):
+        """
+        IPA 在多个区域之一内，访问成功
+        """
+        mem = Memory(size=256 * 1024)  # 256KB
+        mm = MemoryManager(physical_memory=mem)
+
+        # 创建页表
+        pt = mm.create_page_table(base_addr=0x10000, owner_domain=1)
+        pt.map(0x1000, 0x7000)  # VA 0x1000 -> IPA 0x7000
+
+        # 创建 IPA 区域表：两个区域
+        ipa_regions = 0x20000
+        # 区域 0: 0x2000-0x4000
+        mem.write_word(ipa_regions + 0, 0x2000)
+        mem.write_word(ipa_regions + 4, 0x2000)
+        mem.write_word(ipa_regions + 8, 0x07)
+        # 区域 1: 0x6000-0x8000
+        mem.write_word(ipa_regions + 12, 0x6000)
+        mem.write_word(ipa_regions + 16, 0x2000)
+        mem.write_word(ipa_regions + 20, 0x07)
+        # 结束标记
+        mem.write_word(ipa_regions + 24, 0)
+        mem.write_word(ipa_regions + 28, 0)
+        mem.write_word(ipa_regions + 32, 0)
+
+        # 在 PA 0x7000 写入数据
+        mem.write_word(0x7000, 0x12345678)
+
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
+        core.pagetable_chain = [0x10000]
+        core.ipa_regions = ipa_regions
+
+        core.load_assembly("""
+            MOV R1, #0x1000
+            LDR R0, [R1]
+            HALT
+        """, base_addr=0x0000)
+
+        core.state.pc = 0x0000
+        core.run()
+
+        # IPA 0x7000 在第二个区域 0x6000-0x8000 内，访问成功
+        assert core.state.get_reg(0) == 0x12345678

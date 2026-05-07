@@ -594,7 +594,9 @@ class MemoryManager:
         """获取页表"""
         return self.page_tables.get(pagetable_addr)
 
-    def translate_chain(self, va: int, pagetable_chain: List[int]) -> TranslationResult:
+    def translate_chain(self, va: int, pagetable_chain: List[int],
+                        ipa_regions: int = 0,
+                        memory: Optional['Memory'] = None) -> TranslationResult:
         """
         沿着页表链翻译地址。
 
@@ -602,6 +604,8 @@ class MemoryManager:
             va: 虚拟地址
             pagetable_chain: 从当前域到根域的 pagetable 地址列表
                            [domain_n.pagetable, domain_n-1.pagetable, ..., domain_0.pagetable]
+            ipa_regions: IPA 区域表地址（父域设置，用于边界检查）
+            memory: 内存实例（用于读取 ipa_regions 表）
 
         Returns:
             TranslationResult 包含物理地址、权限和异常信息
@@ -610,7 +614,7 @@ class MemoryManager:
         # 权限从最宽松开始，每层翻译可能会限制
         r, w, x, c = True, True, True, False
 
-        for pagetable_addr in pagetable_chain:
+        for i, pagetable_addr in enumerate(pagetable_chain):
             # pagetable_addr = 0 表示跳过本层翻译
             if pagetable_addr == 0:
                 continue
@@ -643,6 +647,15 @@ class MemoryManager:
 
             current_addr = translated
 
+            # IPA 边界检查：在第一层翻译后检查
+            # 第一层翻译后得到 IPA，需要检查是否在 ipa_regions 范围内
+            if i == 0 and ipa_regions != 0 and memory is not None:
+                if not self._check_ipa_bounds(current_addr, ipa_regions, memory):
+                    return TranslationResult(
+                        pa=current_addr,
+                        fault_owner=pt.owner_domain  # 报给当前域
+                    )
+
         return TranslationResult(
             pa=current_addr,
             r=r,
@@ -652,8 +665,41 @@ class MemoryManager:
             fault_owner=None
         )
 
+    def _check_ipa_bounds(self, ipa: int, ipa_regions: int, memory: 'Memory') -> bool:
+        """
+        检查 IPA 是否在 ipa_regions 定义的范围内。
+
+        Args:
+            ipa: 中间物理地址
+            ipa_regions: IPA 区域表地址
+            memory: 内存实例
+
+        Returns:
+            True 如果 IPA 在有效范围内，False 否则
+        """
+        # 遍历 IPA 区域表
+        entry_addr = ipa_regions
+        while True:
+            base = memory.read_word(entry_addr + 0)
+            size = memory.read_word(entry_addr + 4)
+            attr = memory.read_word(entry_addr + 8)
+
+            # 结束标记
+            if base == 0 and size == 0 and attr == 0:
+                break
+
+            # 检查 IPA 是否在范围内
+            if base <= ipa < base + size:
+                return True
+
+            entry_addr += 12  # 每个条目 12 字节
+
+        # 没有找到匹配的区域
+        return False
+
     def read_with_translation(self, va: int, pagetable_chain: List[int],
-                              size: int = 4) -> Tuple[int, Optional[int]]:
+                              size: int = 4,
+                              ipa_regions: int = 0) -> Tuple[int, Optional[int]]:
         """
         带翻译和权限检查的读取。
 
@@ -661,6 +707,7 @@ class MemoryManager:
             va: 虚拟地址
             pagetable_chain: 页表地址链
             size: 读取大小（1/2/4 字节）
+            ipa_regions: IPA 区域表地址（用于边界检查）
 
         Returns:
             (value, fault_owner) - 读取的值和异常归属
@@ -669,7 +716,7 @@ class MemoryManager:
             PermissionError: 权限不足（不可读或访问控制区域）
             BusError: 物理地址访问失败
         """
-        result = self.translate_chain(va, pagetable_chain)
+        result = self.translate_chain(va, pagetable_chain, ipa_regions, self.physical_memory)
         if result.fault_owner is not None:
             return (0, result.fault_owner)
 
@@ -693,7 +740,8 @@ class MemoryManager:
             raise BusError(result.pa)
 
     def write_with_translation(self, va: int, value: int,
-                               pagetable_chain: List[int], size: int = 4) -> Optional[int]:
+                               pagetable_chain: List[int], size: int = 4,
+                               ipa_regions: int = 0) -> Optional[int]:
         """
         带翻译和权限检查的写入。
 
@@ -702,6 +750,7 @@ class MemoryManager:
             value: 要写入的值
             pagetable_chain: 页表地址链
             size: 写入大小（1/2/4 字节）
+            ipa_regions: IPA 区域表地址（用于边界检查）
 
         Returns:
             fault_owner 如果翻译失败，否则 None
@@ -710,7 +759,7 @@ class MemoryManager:
             PermissionError: 权限不足（不可写或访问控制区域）
             BusError: 物理地址访问失败
         """
-        result = self.translate_chain(va, pagetable_chain)
+        result = self.translate_chain(va, pagetable_chain, ipa_regions, self.physical_memory)
         if result.fault_owner is not None:
             return result.fault_owner
 
