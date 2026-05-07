@@ -189,9 +189,23 @@ arg1:   操作数1
 arg2:   操作数2
 ```
 
-### 已定义操作
+### 操作码定义
 
-#### irq - 中断操作
+| 操作 | 操作码 | 说明 |
+|-----|-------|------|
+| IRQ | 0x01 | 中断操作 |
+| MEMTABLE | 0x02 | IPA 区域表操作 |
+| PAGETABLE | 0x03 | 页表操作 |
+| SECDOMAIN | 0x04 | 安全域操作 |
+
+### 子操作码定义
+
+| 子操作 | 操作码 | 适用操作 |
+|-------|-------|---------|
+| QUERY | 0x10 | MEMTABLE, PAGETABLE |
+| COUNT | 0x11 | MEMTABLE, PAGETABLE |
+
+### irq - 中断操作
 
 ```
 sysop irq, read, #irq_id, Rd      ; 读取中断 irq_id 的信息
@@ -201,11 +215,45 @@ sysop irq, write, #irq_id, Rs     ; 写入中断 irq_id 的设置
 权限检查：
 - 如果 interrupt_ctrl == 0，触发异常
 
-#### pagetable - 页表操作
+### memtable - IPA 区域表操作
+
+子域查询父域分配的 IPA 地址范围。
 
 ```
-sysop pagetable, read, #index, Rd   ; 读取第 index 个页表条目
-sysop pagetable, write, #index, Rs  ; 写入第 index 个页表条目
+sysop memtable, query, #index, #regmask
+    ; 读取 ipa_regions 表的第 index 个条目
+    ; regmask: 8 位位图，指定 R0-R7
+    ; 结果: base→最低位寄存器, size→中间, attr→最高位
+    ; 示例: #0x07 表示 R0=base, R1=size, R2=attr
+
+sysop memtable, count, Rd
+    ; 返回 ipa_regions 表的条目数到 Rd
+```
+
+寄存器掩码编码示例：
+
+| regmask | 二进制 | 寄存器分配 |
+|---------|-------|-----------|
+| 0x07 | 0b00000111 | R0=base, R1=size, R2=attr |
+| 0x0E | 0b00001110 | R1=base, R2=size, R3=attr |
+| 0x38 | 0b00111000 | R3=base, R4=size, R5=attr |
+
+返回值：
+- 如果 index 超出范围或 ipa_regions == 0，返回全零
+- 条目格式：base(4字节) + size(4字节) + attr(4字节) = 12字节
+- 表以全零条目结尾
+
+### pagetable - 页表操作
+
+子域查询自己的 VA→IPA 映射表。
+
+```
+sysop pagetable, query, #index, #regmask
+    ; 读取 pagetable 表的第 index 个条目
+    ; regmask 格式同 memtable
+
+sysop pagetable, count, Rd
+    ; 返回 pagetable 表的条目数到 Rd
 ```
 
 ---

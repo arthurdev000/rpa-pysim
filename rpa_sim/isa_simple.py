@@ -103,6 +103,9 @@ RPA 指令：DESCEND, ESCALATE, RETURN, SYSOP
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Callable, Any, Tuple
 from enum import Enum, auto
+
+# DomainBlock field offsets (imported from rpa_logic)
+OFFSET_PAGETABLE = 0x18  # 页表地址 (子域设置)
 import re
 
 
@@ -447,34 +450,56 @@ class Assembler:
             op_str = parts[0].upper()
             subop_str = parts[1].upper()
 
-            op_codes = {'IRQ': 0x01, 'MEMTABLE': 0x02}
+            op_codes = {'IRQ': 0x01, 'MEMTABLE': 0x02, 'PAGETABLE': 0x03, 'SECDOMAIN': 0x04}
             subop_codes = {
+                # IRQ subops
                 'READ': 0x01, 'WRITE': 0x02, 'ENABLE': 0x03, 'DISABLE': 0x04,
                 'SETVEC': 0x05, 'GETPENDING': 0x06, 'CLEAR': 0x07,
                 'REQUEST': 0x08, 'RELEASE': 0x09, 'SGI': 0x0A,
+                # MEMTABLE/PAGETABLE subops
+                'QUERY': 0x10,      # 查询条目，返回 base/size/attr
+                'COUNT': 0x11,      # 获取条目数
             }
 
             op_code = op_codes.get(op_str, 0)
             subop_code = subop_codes.get(subop_str, 0)
 
             arg1, arg2, rd, rn = 0, 0, 0, 0
+            rm = 0  # Third register for multi-register operations
 
-            if len(parts) >= 3:
-                if parts[2].startswith('#'):
-                    arg1 = self.parse_immediate(parts[2])
-                else:
-                    rn = self.parse_register(parts[2])
-                    arg1 = rn
+            # Parse arguments based on operation type
+            if op_code in (0x02, 0x03) and subop_code == 0x10:
+                # MEMTABLE/PAGETABLE QUERY: sysop memtable, query, #index, #regmask
+                # regmask: 8-bit bitmap, each bit indicates R0-R7
+                # Values assigned: base→lowest, size→middle, attr→highest
+                # Example: 0b0111 = R0(base), R1(size), R2(attr)
+                if len(parts) >= 3:
+                    arg1 = self.parse_immediate(parts[2])  # index
+                if len(parts) >= 4:
+                    arg2 = self.parse_immediate(parts[3])  # regmask
+            elif op_code in (0x02, 0x03) and subop_code == 0x11:
+                # MEMTABLE/PAGETABLE COUNT: sysop memtable, count, Rd
+                # Returns: Rd = number of entries
+                if len(parts) >= 3:
+                    rd = self.parse_register(parts[2])
+            else:
+                # Original format: sysop irq, subop, arg1, arg2
+                if len(parts) >= 3:
+                    if parts[2].startswith('#'):
+                        arg1 = self.parse_immediate(parts[2])
+                    else:
+                        rn = self.parse_register(parts[2])
+                        arg1 = rn
 
-            if len(parts) >= 4:
-                if parts[3].startswith('#'):
-                    arg2 = self.parse_immediate(parts[3])
-                else:
-                    rd = self.parse_register(parts[3])
-                    arg2 = rd
+                if len(parts) >= 4:
+                    if parts[3].startswith('#'):
+                        arg2 = self.parse_immediate(parts[3])
+                    else:
+                        rd = self.parse_register(parts[3])
+                        arg2 = rd
 
             imm = (op_code << 24) | (subop_code << 16) | (arg1 << 8) | arg2
-            return Instruction(opcode=opcode, rd=rd, rn=rn, imm=imm)
+            return Instruction(opcode=opcode, rd=rd, rn=rn, rm=rm, imm=imm)
 
         elif opcode in (OpCode.RETURN, OpCode.NOP, OpCode.HALT):
             return Instruction(opcode=opcode)
@@ -709,7 +734,7 @@ class SimpleISA:
             # 使用 MemoryManager 进行带翻译的读取
             if self.memory_manager and len(self.pagetable_chain) > 0:
                 value, fault_owner = self.memory_manager.read_with_translation(
-                    va, self.pagetable_chain, size=4
+                    va, self.pagetable_chain, size=4, ipa_regions=self.ipa_regions
                 )
                 if fault_owner is not None:
                     # 翻译失败，触发异常
@@ -757,7 +782,7 @@ class SimpleISA:
             # 使用 MemoryManager 进行带翻译的写入
             if self.memory_manager and len(self.pagetable_chain) > 0:
                 fault_owner = self.memory_manager.write_with_translation(
-                    va, value, self.pagetable_chain, size=4
+                    va, value, self.pagetable_chain, size=4, ipa_regions=self.ipa_regions
                 )
                 if fault_owner is not None:
                     # 翻译失败，触发异常
@@ -792,13 +817,24 @@ class SimpleISA:
         arg1 = (inst.imm >> 8) & 0xFF
         arg2 = inst.imm & 0xFF
 
-        # IRQ 操作（仅当有 interrupt_controller 时处理）
+        # Operation codes:
+        # 0x01: IRQ
+        # 0x02: MEMTABLE (IPA regions query)
+        # 0x03: PAGETABLE
+        # 0x04: SECDOMAIN
+
+        # IRQ 操作
         if op == 0x01 and self.interrupt_controller:
             self._execute_sysop_irq(subop, arg1, arg2, inst.rd, inst.rn)
             return
 
-        # 安全域操作（仅当有 security_controller 时处理）
-        if op == 0x02 and self.security_controller:
+        # MEMTABLE/PAGETABLE 操作
+        if op in (0x02, 0x03):
+            self._execute_sysop_table(op, subop, arg1, arg2, inst.rd, inst.rn, inst.rm)
+            return
+
+        # 安全域操作
+        if op == 0x04 and self.security_controller:
             self._execute_sysop_secdomain(subop, arg1, arg2, inst.rd, inst.rn)
             return
 
@@ -864,6 +900,103 @@ class SimpleISA:
             current_handle = self.rpa.current_domain.block.interrupt_ctrl
             if current_handle:
                 self.interrupt_controller.sgi(current_handle, target_handle, irq_num)
+
+    def _execute_sysop_table(self, op: int, subop: int, arg1: int, arg2: int, rd: int, rn: int, rm: int) -> None:
+        """
+        执行 sysop memtable/pagetable 指令
+
+        sysop memtable, query, #index, #regmask
+            - 读取 ipa_regions 表的第 index 个条目
+            - regmask: 8-bit bitmap, each bit indicates R0-R7
+            - Values assigned in order: base→lowest, size→middle, attr→highest
+            - Example: regmask=0x07 (0b0111) means R0=base, R1=size, R2=attr
+
+        sysop memtable, count, Rd
+            - 返回 ipa_regions 表的条目数
+
+        sysop pagetable, query, #index, #regmask
+            - 读取 pagetable 表的第 index 个条目
+
+        sysop pagetable, count, Rd
+            - 返回 pagetable 表的条目数
+        """
+        # Subop codes
+        QUERY = 0x10
+        COUNT = 0x11
+
+        # Determine which table to read
+        # op 0x02 = MEMTABLE (ipa_regions), op 0x03 = PAGETABLE
+        if op == 0x02:
+            table_addr = self.ipa_regions
+        else:  # op == 0x03
+            # Read pagetable from current domain's control block
+            table_addr = self.memory.read_word(self.domain_block_addr + OFFSET_PAGETABLE) if self.memory else 0
+
+        if subop == QUERY:
+            # Query entry at index arg1
+            index = arg1
+            regmask = arg2  # 8-bit bitmap for R0-R7
+
+            # Decode registers from bitmap
+            # Find set bits and assign: base→lowest, size→middle, attr→highest
+            set_bits = []
+            for i in range(8):
+                if regmask & (1 << i):
+                    set_bits.append(i)
+
+            if len(set_bits) < 3:
+                # Not enough registers specified, use defaults
+                if len(set_bits) == 0:
+                    set_bits = [0, 1, 2]  # Default to R0, R1, R2
+                elif len(set_bits) == 1:
+                    set_bits.extend([set_bits[0] + 1, set_bits[0] + 2])
+                elif len(set_bits) == 2:
+                    set_bits.append(max(set_bits) + 1)
+
+            rb = set_bits[0]  # base
+            rs = set_bits[1]  # size
+            ra = set_bits[2]  # attr
+
+            if self.memory and table_addr != 0:
+                # Each entry is 12 bytes: base(4) + size(4) + attr(4)
+                entry_addr = table_addr + index * 12
+                base = self.memory.read_word(entry_addr + 0)
+                size = self.memory.read_word(entry_addr + 4)
+                attr = self.memory.read_word(entry_addr + 8)
+
+                # Check for end marker (all zeros)
+                if base == 0 and size == 0 and attr == 0:
+                    # Index out of range, return zeros
+                    base = 0
+                    size = 0
+                    attr = 0
+            else:
+                base = 0
+                size = 0
+                attr = 0
+
+            self.state.set_reg(rb, base)
+            self.state.set_reg(rs, size)
+            self.state.set_reg(ra, attr)
+
+        elif subop == COUNT:
+            # Count entries in table
+            count = 0
+            if self.memory and table_addr != 0:
+                # Count entries until end marker
+                while True:
+                    entry_addr = table_addr + count * 12
+                    base = self.memory.read_word(entry_addr + 0)
+                    size = self.memory.read_word(entry_addr + 4)
+                    attr = self.memory.read_word(entry_addr + 8)
+                    if base == 0 and size == 0 and attr == 0:
+                        break
+                    count += 1
+                    # Safety limit
+                    if count > 1000:
+                        break
+
+            self.state.set_reg(rd, count)
 
     def _execute_sysop_secdomain(self, subop: int, arg1: int, arg2: int, rd: int, rn: int) -> None:
         """执行 sysop secdomain 指令"""

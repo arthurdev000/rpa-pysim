@@ -500,10 +500,117 @@
 
 ### 待调整
 
-- [ ] 实现 `SYSOP memtable, query` 指令（子域查询可用地址范围）
-- [ ] 实现翻译时的 IPA 边界检查（超出 memtable 范围触发 fault）
+- [x] 实现 `SYSOP memtable, query` 指令（子域查询可用地址范围）
+- [x] 实现翻译时的 IPA 边界检查（超出 memtable 范围触发 fault）
 - [ ] 完善内存区域表的数据结构（docs/CONTROL_BLOCK_SPEC.md 已定义格式）
 - [ ] 更新测试覆盖新功能
+
+## 2026-05-07: 实现 IPA 边界检查
+
+### 设计背景
+
+子域通过页表将 VA 翻译为 IPA，但 IPA 必须在父域分配的地址范围内。
+如果 IPA 超出范围，应触发翻译错误。
+
+### 实现方案
+
+在 `MemoryManager.translate_chain()` 中，第一层翻译（VA→IPA）后检查 IPA 边界：
+1. 如果 `ipa_regions == 0`，跳过边界检查（共享内存模式）
+2. 遍历 IPA 区域表，检查 IPA 是否在任一区域内
+3. 如果不在任何区域内，返回翻译错误
+
+### 已修改文件
+
+- `rpa_sim/memory.py`:
+  - `translate_chain()`: 增加 `ipa_regions` 和 `memory` 参数
+  - 新增 `_check_ipa_bounds()`: 遍历区域表检查边界
+  - `read_with_translation()`: 传递 `ipa_regions` 参数
+  - `write_with_translation()`: 传递 `ipa_regions` 参数
+
+- `rpa_sim/isa_simple.py`:
+  - `_execute_ldr()`: 传递 `ipa_regions` 到翻译函数
+  - `_execute_str()`: 传递 `ipa_regions` 到翻译函数
+
+### 测试覆盖
+
+- `test_ipa_within_bounds`: IPA 在允许范围内，访问成功
+- `test_ipa_out_of_bounds`: IPA 超出范围，触发 fault
+- `test_ipa_no_regions_table`: 无区域表时不检查边界
+- `test_ipa_multiple_regions`: 多区域场景
+
+### IPA 区域表格式
+
+每个条目 12 字节：
+- offset 0x00: base (4 字节) - 区域起始地址
+- offset 0x04: size (4 字节) - 区域大小
+- offset 0x08: attr (4 字节) - 区域属性
+- 以全零条目结尾
+
+## 2026-05-07: 实现 SYSOP memtable/pagetable 指令
+
+### 指令设计
+
+```
+sysop memtable, query, #index, #regmask
+    - 读取 ipa_regions 表的第 index 个条目
+    - regmask: 8-bit 位图，每位对应 R0-R7
+    - 结果分配: base→最低位寄存器, size→中间, attr→最高位
+    - 示例: regmask=0x07 (0b0111) → R0=base, R1=size, R2=attr
+    - 示例: regmask=0x38 (0b00111000) → R3=base, R4=size, R5=attr
+
+sysop memtable, count, Rd
+    - 返回 ipa_regions 表的条目数到 Rd
+
+sysop pagetable, query, #index, #regmask
+    - 读取 pagetable 表的第 index 个条目（同上格式）
+
+sysop pagetable, count, Rd
+    - 返回 pagetable 表的条目数到 Rd
+```
+
+### 寄存器掩码编码
+
+使用 8 位位图指定最多 3 个寄存器（R0-R7）：
+
+| regmask | 二进制    | 寄存器分配 |
+|---------|----------|-----------|
+| 0x07    | 0b0111   | R0, R1, R2 |
+| 0x0E    | 0b1110   | R1, R2, R3 |
+| 0x38    | 0b111000 | R3, R4, R5 |
+| 0x1C    | 0b11100  | R2, R3, R4 |
+
+位图解析：找到置位位，按升序分配 base、size、attr。
+
+### 操作码分配
+
+| 操作 | 操作码 |
+|-----|-------|
+| IRQ | 0x01 |
+| MEMTABLE | 0x02 |
+| PAGETABLE | 0x03 |
+| SECDOMAIN | 0x04 |
+
+| 子操作 | 操作码 |
+|-------|-------|
+| QUERY | 0x10 |
+| COUNT | 0x11 |
+
+### 已修改文件
+
+- `rpa_sim/isa_simple.py`:
+  - 更新 op_codes 增加 MEMTABLE, PAGETABLE, SECDOMAIN
+  - 更新 subop_codes 增加 QUERY, COUNT
+  - 新增 `_execute_sysop_table()` 方法
+  - 解析 regmask 位图编码
+  - 从 ipa_regions 或 pagetable 读取条目
+
+### 测试覆盖
+
+- `test_sysop_memtable_query`: 基本查询功能
+- `test_sysop_memtable_query_different_regs`: 不同寄存器掩码
+- `test_sysop_memtable_count`: 条目计数
+- `test_sysop_memtable_query_out_of_range`: 超出范围返回零
+- `test_sysop_memtable_query_no_table`: 无表时返回零
 
 ## 2026-05-07: 命名重构 memtable_address → ipa_regions, memtable_chain → pagetable_chain
 
@@ -532,16 +639,10 @@
 - `README.md`: DomainBlock 字段表
 - `docs/CONTROL_BLOCK_SPEC.md`: 字段定义和说明
 
-### 待修复测试
+### 测试修复 (2026-05-07)
 
-`tests/test_thread_exception.py::TestMemoryTranslation::test_descend_with_memtable` 测试失败：
-- 测试名需要改为 `test_descend_with_pagetable`
-- 测试逻辑需要调整：DESCEND 时应更新 pagetable_chain
-- 预期值 0x12345678，实际值 2048 (0x800)
-- 可能原因：DESCEND 后 pagetable_chain 未正确更新，或页表翻译链配置问题
-
-### 下一步
-
-1. 调试 test_descend_with_memtable 失败原因
-2. 确认 DESCEND 时 pagetable_chain 的更新逻辑
-3. 考虑 offset 0x18 的 pagetable 字段如何在 DESCEND/ESCALATE 中使用
+`tests/test_thread_exception.py::TestMemoryTranslation::test_descend_with_memtable` 已修复：
+- 重命名为 `test_descend_with_pagetable`
+- 修正测试逻辑：`pagetable` 字段 (offset 0x18) 用于子域页表地址
+- `ipa_regions` 字段 (offset 0x10) 用于父域设置的 IPA 约束
+- 测试通过，所有 71 个测试全部通过
