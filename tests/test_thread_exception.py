@@ -4,20 +4,19 @@ Thread and Exception Tests for RPA
 使用汇编指令测试 DESCEND/ESCALATE/RETURN 机制。
 所有测试使用单一 Core，让指令真正执行域切换。
 
-DomainBlock 布局:
-    0x00: ctrlblock_size
-    0x04: exception_vector
-    0x08: reserved
-    0x0C: interrupt_ctrl
-    0x10: ipa_regions (父域设置，只读)
-    0x14: domain_id
-    0x18: pagetable (子域设置，可写)
-    0x1C: child_block
-    0x20: security_domain
-    0x24: access_id
-    0x28: saved_sp (ISA 扩展)
-    0x2C: saved_lr (ISA 扩展 - 首次 DESCEND 入口地址由父域写入，ESCALATE 保存返回地址)
-    0x30: saved_psr (ISA 扩展)
+DomainBlock 布局 (32 字节):
+    0x00: ctrlblock_size   (父域设置)
+    0x04: domain_id        (系统分配)
+    0x08: exception_vector (子域设置，0=传播到父域)
+    0x0C: interrupt_ctrl   (系统分配)
+    0x10: ipa_regions      (父域设置，只读)
+    0x14: pagetable        (子域设置，可写)
+    0x18: child_block      (父域维护)
+    0x1C: security_domain  (系统分配)
+    ISA 扩展:
+    0x28: saved_sp
+    0x2C: saved_lr (首次 DESCEND 入口地址由父域写入，ESCALATE 保存返回地址)
+    0x30: saved_psr
 """
 
 import pytest
@@ -33,12 +32,13 @@ from rpa_sim.isa_simple import (
 
 # 偏移常量
 OFFSET_CTRLBLOCK_SIZE = 0x00
-OFFSET_EXCEPTION_VECTOR = 0x04
+OFFSET_DOMAIN_ID = 0x04
+OFFSET_EXCEPTION_VECTOR = 0x08
 OFFSET_INTERRUPT_CTRL = 0x0C
 OFFSET_IPA_REGIONS = 0x10
-OFFSET_DOMAIN_ID = 0x14
-OFFSET_PAGETABLE = 0x18
-OFFSET_CHILD_BLOCK = 0x1C
+OFFSET_PAGETABLE = 0x14
+OFFSET_CHILD_BLOCK = 0x18
+OFFSET_SECURITY_DOMAIN = 0x1C
 
 
 class TestDescendEscalate:

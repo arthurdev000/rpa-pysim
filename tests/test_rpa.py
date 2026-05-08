@@ -136,15 +136,13 @@ class TestSimpleISA:
 
         # 设置控制块 - 新布局
         # 0x00: ctrlblock_size
-        # 0x04: exception_vector
-        # 0x08: reserved
-        # 0x0C: interrupt_ctrl
-        # 0x10: ipa_regions
-        # 0x14: domain_id
-        # 0x18: pagetable (子域设置)
-        # 0x1C: child_block
-        # 0x20: security_domain
-        # 0x24: access_id
+        # 0x04: domain_id (系统分配)
+        # 0x08: exception_vector (子域设置)
+        # 0x0C: interrupt_ctrl (系统分配)
+        # 0x10: ipa_regions (父域设置)
+        # 0x14: pagetable (子域设置)
+        # 0x18: child_block (父域维护)
+        # 0x1C: security_domain (系统分配)
         # ISA 扩展:
         # 0x28: saved_sp
         # 0x2C: saved_lr (首次 DESCEND 入口地址由父域写入)
@@ -152,7 +150,7 @@ class TestSimpleISA:
         block_addr = 0x0800
         child_entry = 0x2000
         mem.write_word(block_addr + 0x00, 32)               # ctrlblock_size = 32
-        mem.write_word(block_addr + 0x04, 0)                # exception_vector (子域自己用的)
+        mem.write_word(block_addr + 0x08, 0)                # exception_vector (子域自己用的)
         mem.write_word(block_addr + 0x10, 0)                # ipa_regions
         mem.write_word(block_addr + SAVED_LR_OFFSET, child_entry)      # saved_lr = 入口地址 (父域设置)
 
@@ -349,7 +347,7 @@ class TestIntegration:
         child_return_point = 0x2008  # After ESCALATE instruction
 
         mem.write_word(block_addr + 0x00, 32)                    # ctrlblock_size
-        mem.write_word(block_addr + 0x04, 0)                     # exception_vector (子域自己的)
+        mem.write_word(block_addr + 0x08, 0)                     # exception_vector (子域自己的)
         mem.write_word(block_addr + 0x10, 0)                     # ipa_regions
         mem.write_word(block_addr + SAVED_LR_OFFSET, child_entry)           # saved_lr = 入口地址 (父域设置)
 
@@ -416,7 +414,7 @@ class TestExitInstruction:
         block_addr = 0x0800
         child_entry = 0x2000
         mem.write_word(block_addr + 0x00, 32)               # ctrlblock_size
-        mem.write_word(block_addr + 0x04, 0)                # exception_vector
+        mem.write_word(block_addr + 0x08, 0)                # exception_vector
         mem.write_word(block_addr + 0x10, 0)                # ipa_regions
         mem.write_word(block_addr + SAVED_LR_OFFSET, child_entry)      # saved_lr
 
@@ -457,7 +455,7 @@ class TestExitInstruction:
         # 验证父域的 child_block 被清空
         assert rpa.root_domain.block.child_block == 0
         # 验证子域的 domain_id 被清空
-        assert mem.read_word(block_addr + 0x14) == 0  # domain_id
+        assert mem.read_word(block_addr + 0x04) == 0  # domain_id
 
     def test_exit_allows_reuse_of_child_block(self):
         """
@@ -471,7 +469,7 @@ class TestExitInstruction:
         block_addr = 0x0800
         child_entry = 0x2000
         mem.write_word(block_addr + 0x00, 32)               # ctrlblock_size
-        mem.write_word(block_addr + 0x04, 0)                # exception_vector
+        mem.write_word(block_addr + 0x08, 0)                # exception_vector
         mem.write_word(block_addr + 0x10, 0)                # ipa_regions
 
         core = SimpleISA(rpa=rpa, memory=mem)

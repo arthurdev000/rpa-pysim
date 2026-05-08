@@ -202,3 +202,185 @@ class TestMemoryTranslation:
         assert mem.read_word(0x2000) == 0xCAFEBABE
         # 原虚拟地址不应有数据
         assert mem.read_word(0x1000) == 0
+
+
+class TestInterruptReturn:
+    """Tests for interrupt handling and bx lr return"""
+
+    def test_irq_return_flag_in_lr(self):
+        """Test that IRQ sets LR with IRQ_RETURN_FLAG"""
+        from rpa_sim import InterruptController
+        from rpa_sim.isa_simple import IRQ_RETURN_FLAG
+
+        mem = Memory(size=64 * 1024)
+        rpa = RPALogic()
+        rpa.memory = mem
+        irq_ctrl = InterruptController()
+        core = SimpleISA(rpa=rpa, memory=mem, interrupt_controller=irq_ctrl)
+
+        # 设置根域控制块
+        root_block_addr = 0x1000
+        mem.write_word(root_block_addr + 0x00, 32)  # ctrlblock_size
+        mem.write_word(root_block_addr + 0x08, 0x8000)  # exception_vector at 0x08
+        rpa.root_domain.block_addr = root_block_addr
+        core.domain_block_addr = root_block_addr  # 设置当前域控制块地址
+
+        # 申请中断实例
+        handle = irq_ctrl.request(owner_domain_id=0, permissions=0x07)
+        irq_ctrl.set_vector(handle, 0x5000)  # 中断向量
+        irq_ctrl.enable(handle)
+
+        # 主程序：R0 = 1, 2, 3... 然后停止
+        core.load_assembly("""
+            MOV R0, #1
+            MOV R0, #2
+            MOV R0, #3
+            HALT
+        """, base_addr=0x2000)
+        core.state.pc = 0x2000
+
+        # 中断处理程序：R1 = 0xFF，然后 bx lr 返回
+        core.load_assembly("""
+            MOV R1, #0xFF
+            BX LR
+        """, base_addr=0x5000)
+
+        # 触发中断
+        irq_ctrl.trigger_irq(handle, 0)
+
+        # 执行一步后应该进入中断
+        core.step()  # MOV R0, #1
+        assert core.state.in_interrupt == True, "Should be in interrupt after first instruction"
+        assert core.state.lr & IRQ_RETURN_FLAG, "LR should have IRQ_RETURN_FLAG set"
+        assert core.state.pc == 0x5000, "PC should jump to interrupt vector"
+
+    def test_bx_lr_returns_from_interrupt(self):
+        """Test that bx lr correctly returns from interrupt"""
+        from rpa_sim import InterruptController
+        from rpa_sim.isa_simple import IRQ_RETURN_FLAG
+
+        mem = Memory(size=64 * 1024)
+        rpa = RPALogic()
+        rpa.memory = mem
+        irq_ctrl = InterruptController()
+        core = SimpleISA(rpa=rpa, memory=mem, interrupt_controller=irq_ctrl)
+
+        # 设置根域控制块
+        root_block_addr = 0x1000
+        mem.write_word(root_block_addr + 0x00, 32)  # ctrlblock_size
+        rpa.root_domain.block_addr = root_block_addr
+        core.domain_block_addr = root_block_addr  # 设置当前域控制块地址
+
+        # 申请中断实例
+        handle = irq_ctrl.request(owner_domain_id=0, permissions=0x07)
+        irq_ctrl.set_vector(handle, 0x5000)  # 中断向量
+        irq_ctrl.enable(handle)
+
+        # 主程序
+        core.load_assembly("""
+            MOV R0, #1      ; 0x2000 - 被中断点
+            MOV R0, #2      ; 0x2004 - 应该在这里继续
+            MOV R0, #3      ; 0x2008
+            HALT            ; 0x200C
+        """, base_addr=0x2000)
+
+        # 中断处理程序
+        core.load_assembly("""
+            MOV R1, #0xFF   ; 0x5000 - 设置 R1
+            BX LR           ; 0x5004 - 返回
+        """, base_addr=0x5000)
+
+        core.state.pc = 0x2000
+
+        # 触发中断
+        irq_ctrl.trigger_irq(handle, 0)
+
+        # 执行：MOV R0, #1 -> 触发中断 -> MOV R1, #0xFF -> BX LR
+        core.step()  # MOV R0, #1 + 进入中断
+        assert core.state.in_interrupt == True
+
+        core.step()  # MOV R1, #0xFF (in ISR)
+        assert core.state.get_reg(1) == 0xFF
+
+        core.step()  # BX LR -> 返回
+        assert core.state.in_interrupt == False, "Should exit interrupt after bx lr"
+        assert core.state.irq_disabled == False, "IRQ should be re-enabled"
+        assert core.state.pc == 0x2004, "Should return to instruction after interrupted PC"
+
+        # 继续执行
+        core.step()  # MOV R0, #2
+        assert core.state.get_reg(0) == 2
+
+    def test_interrupt_preserves_context(self):
+        """Test that interrupt preserves all registers"""
+        from rpa_sim import InterruptController
+        from rpa_sim.isa_simple import IRQ_SAVE_R0, IRQ_SAVE_PC, IRQ_SAVE_PSR
+
+        mem = Memory(size=64 * 1024)
+        rpa = RPALogic()
+        rpa.memory = mem
+        irq_ctrl = InterruptController()
+        core = SimpleISA(rpa=rpa, memory=mem, interrupt_controller=irq_ctrl)
+
+        # 设置根域控制块
+        root_block_addr = 0x1000
+        mem.write_word(root_block_addr + 0x00, 32)  # ctrlblock_size
+        rpa.root_domain.block_addr = root_block_addr
+        core.domain_block_addr = root_block_addr  # 设置当前域控制块地址
+        core.domain_block_addr = root_block_addr
+
+        # 申请中断实例
+        handle = irq_ctrl.request(owner_domain_id=0, permissions=0x07)
+        irq_ctrl.set_vector(handle, 0x5000)
+        irq_ctrl.enable(handle)
+
+        # 主程序：设置多个寄存器
+        core.load_assembly("""
+            MOV R0, #1
+            MOV R1, #2
+            MOV R2, #3
+            MOV R3, #4      ; 被中断点
+            ADD R0, R0, #1  ; 返回后继续
+            HALT
+        """, base_addr=0x2000)
+
+        # 中断处理程序：修改寄存器
+        core.load_assembly("""
+            MOV R0, #0xFF
+            MOV R1, #0xFF
+            MOV R2, #0xFF
+            MOV R3, #0xFF
+            BX LR
+        """, base_addr=0x5000)
+
+        core.state.pc = 0x2000
+
+        # 执行前几条指令
+        core.step()  # MOV R0, #1
+        core.step()  # MOV R1, #2
+        core.step()  # MOV R2, #3
+
+        # 触发中断
+        irq_ctrl.trigger_irq(handle, 0)
+
+        core.step()  # MOV R3, #4 + 进入中断
+        # 保存的 PC 应该是 0x2010 (MOV R3 后的下一条指令地址)
+        saved_pc = mem.read_word(root_block_addr + IRQ_SAVE_PC)
+        # 注意：被中断的是 MOV R3, #4 执行后的 PC，所以是 0x2010
+
+        # ISR 修改寄存器
+        core.step()  # MOV R0, #0xFF
+        core.step()  # MOV R1, #0xFF
+        core.step()  # MOV R2, #0xFF
+        core.step()  # MOV R3, #0xFF
+        assert core.state.get_reg(0) == 0xFF
+
+        # BX LR 返回
+        core.step()  # BX LR
+        assert core.state.in_interrupt == False
+
+        # 寄存器应该恢复
+        assert core.state.get_reg(0) == 1, "R0 should be restored"
+        assert core.state.get_reg(1) == 2, "R1 should be restored"
+        assert core.state.get_reg(2) == 3, "R2 should be restored"
+        assert core.state.get_reg(3) == 4, "R3 should be restored"

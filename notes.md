@@ -31,20 +31,18 @@
 | LevelConfig | DomainBlock |
 | INHERIT | PageTableMode.INHERIT 或删除（概念上表示继承页表） |
 
-### DomainBlock 字段 (32 字节 + 4 字节填充 = 36 字节, 32字节对齐)
+### DomainBlock 字段 (32 字节, 32字节对齐)
 
-| 偏移 | 字段 | 说明 |
-|------|------|------|
-| 0x00 | ctrlblock_size | 控制块大小（必须为32的倍数，DESCEND时验证） |
-| 0x04 | exception_vector | 异常向量（ESCALATE/故障跳转地址） |
-| 0x08 | reserved_08 | 保留（原 interrupt_vector） |
-| 0x0C | interrupt_ctrl | 中断控制器 handle |
-| 0x10 | memtable_address | 内存翻译表地址 |
-| 0x14 | domain_id | 域ID（系统分配，调试用） |
-| 0x18 | reserved_18 | 保留（原 parent_block） |
-| 0x1C | child_block | 子域控制块地址（父域维护） |
-| 0x20 | security_domain | 安全域 handle |
-| 0x24 | access_id | 访问 ID (DMA 用) |
+| 偏移 | 字段 | 设置者 | 说明 |
+|------|------|--------|------|
+| 0x00 | ctrlblock_size | 父域 | 控制块大小（必须为32的倍数，DESCEND时验证） |
+| 0x04 | domain_id | 系统 | 域ID（系统分配，DMA 访问控制使用此 ID） |
+| 0x08 | exception_vector | 子域 | 异常向量（ESCALATE/故障跳转地址，0=传播到父域） |
+| 0x0C | interrupt_ctrl | 系统 | 中断控制器 handle |
+| 0x10 | ipa_regions | 父域 | IPA 区域表地址（子域只读） |
+| 0x14 | pagetable | 子域 | 页表地址（子域可写） |
+| 0x18 | child_block | 父域 | 子域控制块地址（父域维护） |
+| 0x1C | security_domain | 系统 | 安全域 handle |
 
 ### ESCALATE/RETURN 现场保存区域 (偏移 0x28 起，与安全域字段不冲突)
 
@@ -148,11 +146,11 @@
    - 对齐检查正确（32字节）
    - 各字段读取顺序正确
 
-2. **ESCALATE 返回值** ⚠️ 需要设计
-   - service_type 通过 R0 寄存器传递给父域
-   - 父域 exception_vector 处理程序需要从寄存器读取
-   - 当前没有机制让父域获取子域其他状态（如错误码）
-   - 建议：子域可将状态写入控制块扩展区域，父域通过控制块地址读取
+2. **ESCALATE/RETURN 调用约定** ✅
+   - 子域 ESCALATE：R0=service_type, R1-R3=参数
+   - 父域 RETURN：R0-R3=返回值（含错误码）
+   - 四个寄存器已足够，大数据用指针传递
+   - 父域可通过子域控制块地址读取指针指向的数据
 
 3. **跨域数据传递**
    - 寄存器传递：R0-R12, LR, SP 由 ISA 软件保存/恢复
@@ -243,7 +241,7 @@
 - [x] DMA 访问控制
 - [x] 内存加密模拟
 - [x] 解决 security_domain 与 saved_sp 偏移冲突（ISA 保存区移至 0x28）
-- [ ] 实现中断返回指令 (IRET)
+- [x] ~~实现中断返回指令 (IRET)~~ → 使用 bx lr 带标志位返回（更安全的编程模型）
 - [ ] 实现中断嵌套优先级检查
 
 ## 2026-05-06: 安全域系统实现
@@ -324,6 +322,41 @@
 - 中断现场保存区域 (0x40-0x83): R0-R15 + PSR
 - ISA 每条指令后检查中断
 - 从 DomainBlock 移除 `interrupt_vector`（改为保留字段）
+
+### 2026-05-08: 中断返回机制设计
+
+**设计决策：不使用特殊 IRET 指令**
+
+原因：
+- 程序员容易忘记在 ISR 中使用特殊指令导致编程错误
+- ARM 等架构使用带标志位的返回地址，程序员无需关心
+
+**实现方案：LR 带标志位**
+
+```
+中断进入时 RTL 操作：
+1. 保存所有寄存器到 IRQ_SAVE_* 区域 (R0-R12, SP, LR, PC, PSR)
+2. 清除 pending 位（中断被响应）
+3. LR = saved_pc | IRQ_RETURN_FLAG (bit 31 = 0x80000000)
+4. irq_disabled = True, in_interrupt = True
+5. PC = vector
+
+bx lr 执行时：
+1. 检查 LR 是否有 IRQ_RETURN_FLAG
+2. 如果有且 in_interrupt == True：
+   - 调用 _restore_irq_context() 恢复所有寄存器
+   - PC 从 saved_pc 恢复
+   - irq_disabled = False, in_interrupt = False
+3. 如果有但不在中断上下文：
+   - PC = LR & ~IRQ_RETURN_FLAG
+4. 如果没有标志：
+   - 普通跳转 PC = LR
+```
+
+**优点**：
+- ISR 直接使用 `bx lr` 返回，无需特殊指令
+- 硬件自动恢复上下文，程序员无需手动处理
+- 标志位防止误用（非中断上下文也能正确处理）
 
 ### 2026-05-06: 代码清理
 - 移除 `RPACore` 向后兼容别名（统一使用 `RPALogic`）

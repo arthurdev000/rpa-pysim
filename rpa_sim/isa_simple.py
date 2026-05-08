@@ -4,24 +4,25 @@ SimpleISA - 简化指令集核心
 这是 RPA 架构的指令执行核心。每个 Domain 可以有不同的 ISA 实现，
 SimpleISA 是一个简化版的类 ARM 指令集，用于演示 RPA 的核心机制。
 
-DomainBlock 内存布局 (32 位实现, 4 字节宽度):
-==============================================
+Domain Control Block (DCB) 内存布局 (32 位实现, 32 字节固定大小):
+==================================================================
 
     ┌──────────┬────────────────────────────────────────────────────────┐
     │ 偏移     │ 字段                                                   │
     ├──────────┼────────────────────────────────────────────────────────┤
-    │ 0x00     │ ctrlblock_size      控制块大小                         │
-    │ 0x04     │ exception_vector    异常向量 (ESCALATE 跳转地址)       │
-    │ 0x08     │ reserved            保留                               │
-    │ 0x0C     │ interrupt_ctrl      中断控制器 handle                  │
+    │ 0x00     │ ctrlblock_size      控制块大小 (父域设置，只读)         │
+    │ 0x04     │ domain_id           域ID (系统分配，只读)              │
+    │ 0x08     │ exception_vector    异常向量 (子域设置，ESCALATE跳转)  │
+    │ 0x0C     │ interrupt_ctrl      中断控制器 handle (系统分配)       │
     │ 0x10     │ ipa_regions         IPA 区域表地址 (父域设置，只读)    │
-    │ 0x14     │ domain_id           域ID (系统分配)                    │
-    │ 0x18     │ pagetable           页表地址 (子域设置，可写)          │
-    │ 0x1C     │ child_block         子域控制块地址                     │
-    │ 0x20     │ security_domain     安全域 handle                      │
-    │ 0x24     │ access_id           访问 ID (DMA 用)                   │
+    │ 0x14     │ pagetable           页表地址 (子域设置，可写)          │
+    │ 0x18     │ child_block         子域控制块地址 (父域维护)          │
+    │ 0x1C     │ security_domain     安全域 handle (系统分配)           │
     ├──────────┴────────────────────────────────────────────────────────┤
-    │ 以上为 RPA 通用字段，以下为 SimpleISA 特定字段                      │
+    │ 字段所有权：父域设置 (0x00, 0x10, 0x18) / 子域设置 (0x08, 0x14)    │
+    │            系统分配 (0x04, 0x0C, 0x1C)                             │
+    ├──────────┬────────────────────────────────────────────────────────┤
+    │          │ 以下为 SimpleISA 扩展字段 (不属于 DCB 标准)            │
     ├──────────┬────────────────────────────────────────────────────────┤
     │ 0x28     │ saved_sp            ESCALATE 保存的栈指针              │
     │ 0x2C     │ saved_lr            ESCALATE 保存的返回地址            │
@@ -109,9 +110,9 @@ OFFSET_PAGETABLE = 0x18  # 页表地址 (子域设置)
 import re
 
 
-# DomainBlock 上下文保存区域偏移 (在安全域扩展字段之后)
-# 这些偏移是相对于 DomainBlock 起始地址的
-# 注意: 0x20-0x27 为 security_domain/access_id 字段，ISA 保存区从 0x28 开始
+# DomainBlock 上下文保存区域偏移 (在 DCB 标准字段之后)
+# DCB 标准字段结束于 0x1C (security_domain)，ISA 扩展区从 0x28 开始
+# 0x20-0x27 保留供未来 DCB 字段使用
 SAVED_SP_OFFSET = 0x28    # ISA 保存的栈指针
 SAVED_LR_OFFSET = 0x2C    # ISA 保存的链接寄存器（返回地址）
 SAVED_PSR_OFFSET = 0x30   # ISA 保存的程序状态寄存器 (N, Z, C, V)
@@ -136,6 +137,10 @@ IRQ_SAVE_LR = 0x78
 IRQ_SAVE_PC = 0x7C
 IRQ_SAVE_PSR = 0x80
 IRQ_SAVE_SIZE = 0x44  # 17 * 4 = 68 字节
+
+# LR 标志位定义
+# bit 31 = 1 表示中断返回地址，bx lr 时需恢复中断上下文
+IRQ_RETURN_FLAG = 0x80000000
 
 # 调用标准常量
 REG_ARG_START = 0         # r0 - 参数/返回值起始寄存器
@@ -696,7 +701,32 @@ class SimpleISA:
             self.state.pc = inst.addr
 
         elif opcode == OpCode.BX:
-            self.state.pc = self.state.get_reg(inst.rm)
+            target = self.state.get_reg(inst.rm)
+            # 检查是否为中断返回地址
+            if target & IRQ_RETURN_FLAG:
+                # 清除标志位得到实际地址
+                actual_addr = target & ~IRQ_RETURN_FLAG
+                if self.state.in_interrupt:
+                    # 中断返回：恢复所有保存的上下文
+                    # _restore_irq_context 会恢复 R0-R12, SP, LR, PC, PSR
+                    # 并清除 irq_disabled 和 in_interrupt 标志
+                    # 但我们需要先设置 saved_pc 为返回地址
+                    if self.memory:
+                        block_addr = self.domain_block_addr
+                        # 恢复上下文
+                        self._restore_irq_context()
+                        # PC 已在 _restore_irq_context 中设置
+                    else:
+                        # 无内存时，简单恢复
+                        self.state.pc = actual_addr
+                        self.state.irq_disabled = False
+                        self.state.in_interrupt = False
+                else:
+                    # 非中断上下文，直接跳转（清除标志）
+                    self.state.pc = actual_addr
+            else:
+                # 普通跳转
+                self.state.pc = target
 
         # RPA 指令
         elif opcode == OpCode.DESCEND:
@@ -1124,8 +1154,18 @@ class SimpleISA:
         if result:
             handle, vector = result
             if vector:
+                # 清除 pending 位（中断被响应）
+                # 找到触发的中断号并清除
+                pending = self.interrupt_controller.get_pending(handle)
+                if pending:
+                    # 清除最低位的 pending（当前处理的中断）
+                    irq_num = (pending & -pending).bit_length() - 1
+                    self.interrupt_controller.clear_pending(handle, irq_num)
                 # 保存中断现场
                 self._save_irq_context()
+                # 设置 LR 为带标志的返回地址
+                # bx lr 执行时会检测标志并恢复上下文
+                self.state.lr = self.state.pc | IRQ_RETURN_FLAG
                 # 标记中断状态
                 self.state.irq_disabled = True
                 self.state.in_interrupt = True
