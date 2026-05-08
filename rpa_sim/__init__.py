@@ -17,7 +17,9 @@ Main components:
 from .rpa_logic import (
     RPALogic, Domain, DomainBlock, FaultInfo,
     CTRLBLOCK_SIZE, CTRLBLOCK_ALIGN, CTRLBLOCK_MIN_SIZE, DomainBlockError,
-    OFFSET_SECURITY_DOMAIN, OFFSET_ACCESS_ID
+    OFFSET_CTRLBLOCK_SIZE, OFFSET_DOMAIN_ID, OFFSET_EXCEPTION_VECTOR,
+    OFFSET_INTERRUPT_CTRL, OFFSET_IPA_REGIONS, OFFSET_PAGETABLE,
+    OFFSET_CHILD_BLOCK, OFFSET_SECURITY_DOMAIN
 )
 from .memory import (
     MemoryManager, PageTable, PageTableEntry, Memory,
@@ -40,7 +42,9 @@ __all__ = [
     # Core
     "RPALogic", "Domain", "DomainBlock", "FaultInfo",
     "CTRLBLOCK_SIZE", "CTRLBLOCK_ALIGN", "CTRLBLOCK_MIN_SIZE", "DomainBlockError",
-    "OFFSET_SECURITY_DOMAIN", "OFFSET_ACCESS_ID",
+    "OFFSET_CTRLBLOCK_SIZE", "OFFSET_DOMAIN_ID", "OFFSET_EXCEPTION_VECTOR",
+    "OFFSET_INTERRUPT_CTRL", "OFFSET_IPA_REGIONS", "OFFSET_PAGETABLE",
+    "OFFSET_CHILD_BLOCK", "OFFSET_SECURITY_DOMAIN",
     # Memory
     "MemoryManager", "PageTable", "PageTableEntry", "Memory",
     "TranslationError", "BusError", "PermissionError", "TranslationResult",

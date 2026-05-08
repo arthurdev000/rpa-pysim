@@ -204,8 +204,8 @@ class TestSecurityDomainWithRPALogic:
         block_addr = 0x1000
         block = DomainBlock(ctrlblock_size=32, exception_vector=0x8004)
         mem.write_word(block_addr + 0x00, block.ctrlblock_size)
-        mem.write_word(block_addr + 0x04, block.exception_vector)
-        mem.write_word(block_addr + 0x20, 0)  # security_domain = 0 (继承)
+        mem.write_word(block_addr + 0x08, block.exception_vector)  # exception_vector at 0x08
+        mem.write_word(block_addr + 0x1C, 0)  # security_domain = 0 (继承)
 
         # DESCEND
         result = rpa.descend(block_addr)
@@ -234,8 +234,8 @@ class TestSecurityDomainWithRPALogic:
         block_addr = 0x1000
         block = DomainBlock(ctrlblock_size=32, exception_vector=0x8004)
         mem.write_word(block_addr + 0x00, block.ctrlblock_size)
-        mem.write_word(block_addr + 0x04, block.exception_vector)
-        mem.write_word(block_addr + 0x20, sec_handle)  # 指定安全域
+        mem.write_word(block_addr + 0x08, block.exception_vector)  # exception_vector at 0x08
+        mem.write_word(block_addr + 0x1C, sec_handle)  # 指定安全域 at 0x1C
 
         # DESCEND
         result = rpa.descend(block_addr)
@@ -264,8 +264,8 @@ class TestSecurityDomainWithRPALogic:
         # 准备子域 DomainBlock
         child_block_addr = 0x1000
         mem.write_word(child_block_addr + 0x00, 32)
-        mem.write_word(child_block_addr + 0x04, 0x8004)
-        mem.write_word(child_block_addr + 0x20, sec_handle)
+        mem.write_word(child_block_addr + 0x08, 0x8004)  # exception_vector at 0x08
+        mem.write_word(child_block_addr + 0x1C, sec_handle)  # security_domain at 0x1C
 
         # DESCEND
         rpa.descend(child_block_addr)
@@ -425,8 +425,8 @@ class TestDomainIDAllocation:
         # 准备 DomainBlock
         block_addr = 0x1000
         mem.write_word(block_addr + 0x00, 32)
-        mem.write_word(block_addr + 0x04, 0x8004)
-        mem.write_word(block_addr + 0x20, sec_handle)
+        mem.write_word(block_addr + 0x08, 0x8004)  # exception_vector at 0x08
+        mem.write_word(block_addr + 0x1C, sec_handle)  # security_domain at 0x1C
 
         # DESCEND
         result = rpa.descend(block_addr)
@@ -446,7 +446,7 @@ class TestDomainIDAllocation:
         # 准备 DomainBlock
         block_addr = 0x1000
         mem.write_word(block_addr + 0x00, 32)
-        mem.write_word(block_addr + 0x04, 0x8004)
+        mem.write_word(block_addr + 0x08, 0x8004)  # exception_vector at 0x08
 
         # DESCEND
         result = rpa.descend(block_addr)
