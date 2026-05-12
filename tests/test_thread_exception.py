@@ -7,7 +7,7 @@ Thread and Exception Tests for RPA
 DomainBlock 布局 (32 字节):
     0x00: ctrlblock_size   (父域设置)
     0x04: domain_id        (系统分配)
-    0x08: exception_vector (子域设置，0=传播到父域)
+    0x08: trap_vector      (子域设置，0=传播到父域)
     0x0C: interrupt_ctrl   (系统分配)
     0x10: ipa_regions      (父域设置，只读)
     0x14: pagetable        (子域设置，可写)
@@ -33,7 +33,7 @@ from rpa_sim.isa_simple import (
 # 偏移常量
 OFFSET_CTRLBLOCK_SIZE = 0x00
 OFFSET_DOMAIN_ID = 0x04
-OFFSET_EXCEPTION_VECTOR = 0x08
+OFFSET_TRAP_VECTOR = 0x08
 OFFSET_INTERRUPT_CTRL = 0x0C
 OFFSET_IPA_REGIONS = 0x10
 OFFSET_PAGETABLE = 0x14
@@ -56,14 +56,14 @@ class TestDescendEscalate:
         block_addr = 0x1000
         entry_addr = 0x2000
         mem.write_word(block_addr + OFFSET_CTRLBLOCK_SIZE, CTRLBLOCK_SIZE)  # ctrlblock_size
-        mem.write_word(block_addr + OFFSET_EXCEPTION_VECTOR, 0)             # exception_vector
+        mem.write_word(block_addr + OFFSET_TRAP_VECTOR, 0)             # trap_vector
         mem.write_word(block_addr + OFFSET_IPA_REGIONS, 0)             # ipa_regions
         mem.write_word(block_addr + OFFSET_SAVED_LR, entry_addr)            # saved_lr = 入口地址
 
         rpa = RPALogic()
         rpa.memory = mem
-        # 设置父域的 exception_vector
-        rpa.root_domain.block.exception_vector = 0x3000
+        # 设置父域的 trap_vector
+        rpa.root_domain.block.trap_vector = 0x3000
 
         core = SimpleISA(rpa=rpa, memory=mem)
 
@@ -99,9 +99,9 @@ class TestDescendEscalate:
         # R5 不应该被设置（没有执行 MOV R5, #0xBAD）
         assert core.state.get_reg(5) == 0
 
-    def test_escalate_jumps_to_exception_vector(self):
+    def test_escalate_jumps_to_trap_vector(self):
         """
-        ESCALATE 跳转到父域的 exception_vector
+        ESCALATE 跳转到父域的 trap_vector
         """
         mem = Memory(size=64 * 1024)
 
@@ -109,7 +109,7 @@ class TestDescendEscalate:
         block_addr = 0x1000
         entry_addr = 0x2000
         mem.write_word(block_addr + OFFSET_CTRLBLOCK_SIZE, CTRLBLOCK_SIZE)  # ctrlblock_size
-        mem.write_word(block_addr + OFFSET_EXCEPTION_VECTOR, 0)             # exception_vector
+        mem.write_word(block_addr + OFFSET_TRAP_VECTOR, 0)             # trap_vector
         mem.write_word(block_addr + OFFSET_IPA_REGIONS, 0)             # ipa_regions
         mem.write_word(block_addr + OFFSET_SAVED_LR, entry_addr)            # saved_lr = 入口地址
 
@@ -117,8 +117,8 @@ class TestDescendEscalate:
         rpa.memory = mem
         core = SimpleISA(rpa=rpa, memory=mem)
 
-        # 修改父域（根域）的 exception_vector
-        rpa.root_domain.block.exception_vector = 0x3000
+        # 修改父域（根域）的 trap_vector
+        rpa.root_domain.block.trap_vector = 0x3000
 
         core.load_assembly("""
             MOV R0, #0x1000
@@ -141,7 +141,7 @@ class TestDescendEscalate:
         core.state.pc = 0x0000
         core.run()
 
-        # 验证：ESCALATE 跳转到了父域的 exception_vector 并执行了异常处理代码
+        # 验证：ESCALATE 跳转到了父域的 trap_vector 并执行了异常处理代码
         assert core.state.get_reg(2) == 0xCAFE
 
     def test_descend_updates_pagetable_chain(self):
@@ -152,7 +152,7 @@ class TestDescendEscalate:
 
         block_addr = 0x0800
         mem.write_word(block_addr + OFFSET_CTRLBLOCK_SIZE, CTRLBLOCK_SIZE)  # ctrlblock_size
-        mem.write_word(block_addr + OFFSET_EXCEPTION_VECTOR, 0)             # exception_vector
+        mem.write_word(block_addr + OFFSET_TRAP_VECTOR, 0)             # trap_vector
         mem.write_word(block_addr + OFFSET_IPA_REGIONS, 0x10000)       # ipa_regions
         mem.write_word(block_addr + OFFSET_SAVED_LR, 0x2000)                # saved_lr = 入口地址
 
@@ -172,7 +172,7 @@ class TestDescendEscalate:
             HALT
         """, base_addr=0x2000)
 
-        rpa.root_domain.block.exception_vector = 0x3000
+        rpa.root_domain.block.trap_vector = 0x3000
         core.load_assembly("HALT", base_addr=0x3000)
 
         core.state.pc = 0x0000
@@ -193,7 +193,7 @@ class TestDescendEscalate:
 
         block_addr = 0x1000
         mem.write_word(block_addr + OFFSET_CTRLBLOCK_SIZE, CTRLBLOCK_SIZE)  # ctrlblock_size
-        mem.write_word(block_addr + OFFSET_EXCEPTION_VECTOR, 0)             # exception_vector
+        mem.write_word(block_addr + OFFSET_TRAP_VECTOR, 0)             # trap_vector
         mem.write_word(block_addr + OFFSET_IPA_REGIONS, 0)             # ipa_regions = 0 (共享)
         mem.write_word(block_addr + OFFSET_SAVED_LR, 0x2000)                # saved_lr = 入口地址
 
@@ -222,8 +222,8 @@ class TestDescendEscalate:
             HALT
         """, base_addr=0x2000)
 
-        # 设置父域的 exception_vector 让 ESCALATE 后 halt
-        rpa.root_domain.block.exception_vector = 0x3000
+        # 设置父域的 trap_vector 让 ESCALATE 后 halt
+        rpa.root_domain.block.trap_vector = 0x3000
         core.load_assembly("HALT", base_addr=0x3000)
 
         core.state.pc = 0x0000
@@ -242,7 +242,7 @@ class TestDescendEscalate:
         child_block_addr = 0x1000
         entry_addr = 0x2000
         mem.write_word(child_block_addr + OFFSET_CTRLBLOCK_SIZE, CTRLBLOCK_SIZE)
-        mem.write_word(child_block_addr + OFFSET_EXCEPTION_VECTOR, 0)
+        mem.write_word(child_block_addr + OFFSET_TRAP_VECTOR, 0)
         mem.write_word(child_block_addr + OFFSET_IPA_REGIONS, 0)
         mem.write_word(child_block_addr + OFFSET_SAVED_LR, entry_addr)
 
@@ -262,7 +262,7 @@ class TestDescendEscalate:
             HALT
         """, base_addr=entry_addr)
 
-        rpa.root_domain.block.exception_vector = 0x3000
+        rpa.root_domain.block.trap_vector = 0x3000
         core.load_assembly("HALT", base_addr=0x3000)
 
         core.state.pc = 0x0000
@@ -360,7 +360,7 @@ class TestMemoryTranslation:
         # 设置控制块
         block_addr = 0x0800
         mem.write_word(block_addr + OFFSET_CTRLBLOCK_SIZE, CTRLBLOCK_SIZE)
-        mem.write_word(block_addr + OFFSET_EXCEPTION_VECTOR, 0)
+        mem.write_word(block_addr + OFFSET_TRAP_VECTOR, 0)
         mem.write_word(block_addr + OFFSET_IPA_REGIONS, 0)       # ipa_regions = 0 (无约束)
         mem.write_word(block_addr + OFFSET_PAGETABLE, 0x20000)   # pagetable = Domain 1 的页表
         mem.write_word(block_addr + OFFSET_SAVED_LR, 0x2000)
@@ -388,7 +388,7 @@ class TestMemoryTranslation:
         # 在 PA 0x3000 写入数据
         mem.write_word(0x3000, 0x12345678)
 
-        rpa.root_domain.block.exception_vector = 0x4000
+        rpa.root_domain.block.trap_vector = 0x4000
         core.load_assembly("HALT", base_addr=0x4000)
 
         core.state.pc = 0x0000

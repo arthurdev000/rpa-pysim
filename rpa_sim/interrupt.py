@@ -44,6 +44,78 @@ from typing import Optional, Tuple, List, Dict
 from enum import IntEnum
 
 
+# =============================================================================
+# Priority System
+# =============================================================================
+
+# Priority levels (higher = more urgent)
+PRIORITY_DATA_ABORT = 4         # Highest - data abort exception
+PRIORITY_INSTRUCTION_ABORT = 4  # Instruction abort exception
+PRIORITY_INVALID_INSTRUCTION = 4  # Invalid instruction exception
+PRIORITY_ESCALATE = 3           # ESCALATE trap
+PRIORITY_IRQ = 2                # Normal interrupt
+PRIORITY_NORMAL = 1             # Lowest - normal execution
+
+
+class PriorityController:
+    """
+    Manages interrupt/exception priorities.
+
+    Priority rules:
+    - Higher priority events can preempt lower priority
+    - During exception handling, IRQs are masked
+    - ESCALATE has higher priority than IRQ
+    """
+
+    def __init__(self):
+        self.current_priority = PRIORITY_NORMAL
+        self.pending_events: List['PendingEvent'] = []
+
+    def can_take(self, priority: int) -> bool:
+        """Check if an event with given priority can be taken."""
+        return priority > self.current_priority
+
+    def enter(self, priority: int) -> None:
+        """Enter a higher priority context."""
+        self.current_priority = priority
+
+    def exit(self) -> None:
+        """Exit to normal priority."""
+        self.current_priority = PRIORITY_NORMAL
+
+    def queue_event(self, event: 'PendingEvent') -> None:
+        """Queue a pending event."""
+        self.pending_events.append(event)
+        # Sort by priority (highest first)
+        self.pending_events.sort(key=lambda e: e.priority, reverse=True)
+
+    def get_next_event(self) -> Optional['PendingEvent']:
+        """Get next pending event that can be taken."""
+        for event in self.pending_events:
+            if self.can_take(event.priority):
+                return event
+        return None
+
+    def remove_event(self, event: 'PendingEvent') -> None:
+        """Remove a pending event."""
+        if event in self.pending_events:
+            self.pending_events.remove(event)
+
+
+@dataclass
+class PendingEvent:
+    """A pending event waiting to be processed."""
+    event_type: str       # 'exception', 'escalate', 'irq'
+    priority: int         # Priority level
+    vector: int = 0       # Handler vector
+    irq_num: int = 0      # IRQ number (for 'irq' type)
+    handle: int = 0       # Interrupt handle (for 'irq' type)
+
+
+# =============================================================================
+# Permission and Suboperation Codes
+# =============================================================================
+
 # 权限位定义
 class IrqPerm(IntEnum):
     """中断权限位"""
@@ -68,6 +140,25 @@ class IrqSubOp(IntEnum):
 
 
 @dataclass
+class InterruptContext:
+    """
+    静态中断上下文 (用于硬件真实的静态分配)
+
+    每个域的中断控制器状态，存储在 DCB 附近或固定位置。
+    """
+    owner_domain_id: int = 0       # 申请者域 ID
+    permissions: int = 0           # 权限位图
+    irq_enable: bool = False       # I-bit（中断使能）
+    vector: int = 0                # 中断向量（存储在 DCB offset 0x08）
+    pending: int = 0               # 待处理中断位图（最多 32 个中断）
+    parent_handle: int = -1        # 父域实例索引（-1 表示无父）
+    permission_mask: int = 0xFFFFFFFF  # 可委托的 IRQ 权限位图（每位对应一个 IRQ）
+
+    # 索引位置（用于静态分配池）
+    index: int = 0
+
+
+@dataclass
 class InterruptInstance:
     """
     中断控制器实例
@@ -82,6 +173,7 @@ class InterruptInstance:
     pending: int = 0             # 待处理中断位图（最多 32 个中断）
     parent_handle: int = 0       # 父域实例 handle（用于多级传递）
     child_handle: int = 0        # 子域实例 handle（用于多级传递）
+    permission_mask: int = 0xFFFFFFFF  # 可委托的 IRQ 权限位图
 
 
 @dataclass
@@ -100,6 +192,17 @@ class InterruptController:
     全局中断控制器
 
     管理所有中断实例，提供申请、操作、查询接口。
+
+    优先级系统:
+    - PRIORITY_DATA_ABORT = 4 (最高)
+    - PRIORITY_ESCALATE = 3
+    - PRIORITY_IRQ = 2
+    - PRIORITY_NORMAL = 1 (最低)
+
+    权限委托链:
+    - 父域可以限制子域的中断权限
+    - permission_mask 表示可以委托给子域的 IRQ 位图
+    - 委托时需要检查整个祖先链
     """
 
     # handle 起始值（避免与 0 混淆）
@@ -117,6 +220,69 @@ class InterruptController:
 
         # 全局中断待处理标志（供 ISA 快速检查）
         self.global_pending: bool = False
+
+        # 优先级控制器
+        self.priority_controller: Optional[PriorityController] = None
+
+    def set_priority_controller(self, controller: PriorityController) -> None:
+        """设置优先级控制器"""
+        self.priority_controller = controller
+
+    def can_delegate_irq(self, from_handle: int, to_handle: int, irq_num: int) -> bool:
+        """
+        检查 IRQ 权限是否可以从 from_handle 委托给 to_handle。
+
+        通过祖先链检查：如果任何祖先拒绝了该 IRQ 权限，则不能委托。
+
+        Args:
+            from_handle: 委托者实例 handle
+            to_handle: 接收者实例 handle
+            irq_num: IRQ 号
+
+        Returns:
+            bool: 是否可以委托
+        """
+        if to_handle not in self.instances:
+            return False
+
+        to_instance = self.instances[to_handle]
+        irq_bit = 1 << irq_num
+
+        # 从 to_handle 向上遍历祖先链
+        current_handle = to_handle
+        while current_handle != 0 and current_handle != from_handle:
+            if current_handle not in self.instances:
+                break
+
+            current = self.instances[current_handle]
+
+            # 检查当前实例是否有该 IRQ 权限
+            if (current.permission_mask & irq_bit) == 0:
+                # 祖先拒绝了该 IRQ 权限
+                return False
+
+            # 继续向上检查
+            current_handle = current.parent_handle
+
+        return True
+
+    def set_permission_mask(self, handle: int, mask: int) -> bool:
+        """
+        设置实例的 IRQ 权限掩码。
+
+        父域调用此方法限制子域可以委托的中断权限。
+
+        Args:
+            handle: 实例句柄
+            mask: IRQ 权限位图（每位对应一个 IRQ）
+
+        Returns:
+            bool: 是否成功
+        """
+        if handle not in self.instances:
+            return False
+        self.instances[handle].permission_mask = mask
+        return True
 
     def request(self, owner_domain_id: int, permissions: int,
                 parent_handle: int = 0) -> int:
@@ -309,6 +475,63 @@ class InterruptController:
                 irq_num = (instance.pending & -instance.pending).bit_length() - 1
                 return (handle, instance.vector)
 
+        return None
+
+    def check_interrupt_with_priority(self, current_domain_id: int,
+                                       domain_handles: Dict[int, int]) -> Optional[PendingEvent]:
+        """
+        检查是否有待处理的中断（带优先级）
+
+        从当前域向上查找，返回最高优先级的待处理中断。
+        使用 PriorityController 进行优先级判断。
+
+        Args:
+            current_domain_id: 当前域 ID
+            domain_handles: 域 ID 到中断实例 handle 的映射
+
+        Returns:
+            PendingEvent 或 None
+        """
+        if not self.global_pending:
+            return None
+
+        # 检查优先级控制器
+        if self.priority_controller:
+            # 检查是否可以接受 IRQ 优先级的事件
+            if not self.priority_controller.can_take(PRIORITY_IRQ):
+                return None
+
+        # 从当前域向上查找（通过 parent_handle 链）
+        handles = self.domain_instances.get(current_domain_id, [])
+        for handle in handles:
+            if handle not in self.instances:
+                continue
+            instance = self.instances[handle]
+
+            # 检查是否有 pending 且 I-bit 启用
+            if instance.pending != 0 and instance.irq_enable:
+                # 返回第一个待处理的中断
+                irq_num = (instance.pending & -instance.pending).bit_length() - 1
+                return PendingEvent(
+                    event_type='irq',
+                    priority=PRIORITY_IRQ,
+                    vector=instance.vector,
+                    irq_num=irq_num,
+                    handle=handle
+                )
+
+        return None
+
+    def check_exception(self, current_domain_id: int) -> Optional[PendingEvent]:
+        """
+        检查是否有待处理的异常（最高优先级）
+
+        Returns:
+            PendingEvent 或 None
+        """
+        # 异常优先级最高，总是可以抢占
+        # 目前异常处理由 fault() 方法处理
+        # 此方法预留用于扩展
         return None
 
     def get_instance(self, handle: int) -> Optional[InterruptInstance]:

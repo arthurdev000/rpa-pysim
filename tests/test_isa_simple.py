@@ -221,7 +221,7 @@ class TestInterruptReturn:
         # 设置根域控制块
         root_block_addr = 0x1000
         mem.write_word(root_block_addr + 0x00, 32)  # ctrlblock_size
-        mem.write_word(root_block_addr + 0x08, 0x8000)  # exception_vector at 0x08
+        mem.write_word(root_block_addr + 0x08, 0x8000)  # trap_vector at 0x08
         rpa.root_domain.block_addr = root_block_addr
         core.domain_block_addr = root_block_addr  # 设置当前域控制块地址
 
