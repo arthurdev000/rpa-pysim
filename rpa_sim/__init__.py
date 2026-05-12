@@ -11,7 +11,7 @@ Main components:
 - SimpleISA: Simplified instruction set core (ARM-like)
 - Machine: Complete machine integrating all components
 - InterruptController: Interrupt management
-- SecurityDomainController: Security domain management
+- SecurityGroupController: Security domain management
 """
 
 from .rpa_logic import (
@@ -20,7 +20,7 @@ from .rpa_logic import (
     WORD_SIZE, CTRLBLOCK_SIZE, CTRLBLOCK_ALIGN, CTRLBLOCK_MIN_SIZE, DomainBlockError,
     OFFSET_CTRLBLOCK_SIZE, OFFSET_DOMAIN_ID, OFFSET_TRAP_VECTOR,
     OFFSET_INTERRUPT_CTRL, OFFSET_IPA_REGIONS, OFFSET_PAGETABLE,
-    OFFSET_CHILD_BLOCK, OFFSET_SECURITY_DOMAIN
+    OFFSET_CHILD_BLOCK, OFFSET_SECURITY_GROUP
 )
 from .memory import (
     MemoryManager, PageTable, PageTableEntry, Memory,
@@ -33,9 +33,9 @@ from .stdio import StdioDevice, StdioDeviceManager
 from .interrupt import (
     InterruptController, InterruptInstance, IrqPerm, IrqSubOp
 )
-from .security_domain import (
-    SecurityDomainController, SecurityDomain, SecurityDomainConfig,
-    SecDomainPerm, EncryptedRegion as SecEncryptedRegion
+from .security_group import (
+    SecurityGroupController, SecurityGroup, SecurityGroupConfig,
+    SecGroupPerm, EncryptedRegion as SecEncryptedRegion
 )
 
 __version__ = "0.7.0"
@@ -47,7 +47,7 @@ __all__ = [
     "DomainBlockError",
     "OFFSET_CTRLBLOCK_SIZE", "OFFSET_DOMAIN_ID", "OFFSET_TRAP_VECTOR",
     "OFFSET_INTERRUPT_CTRL", "OFFSET_IPA_REGIONS", "OFFSET_PAGETABLE",
-    "OFFSET_CHILD_BLOCK", "OFFSET_SECURITY_DOMAIN",
+    "OFFSET_CHILD_BLOCK", "OFFSET_SECURITY_GROUP",
     # Memory
     "MemoryManager", "PageTable", "PageTableEntry", "Memory",
     "TranslationError", "BusError", "PermissionError", "TranslationResult",
@@ -61,6 +61,6 @@ __all__ = [
     # Interrupt
     "InterruptController", "InterruptInstance", "IrqPerm", "IrqSubOp",
     # Security Domain
-    "SecurityDomainController", "SecurityDomain", "SecurityDomainConfig",
-    "SecDomainPerm",
+    "SecurityGroupController", "SecurityGroup", "SecurityGroupConfig",
+    "SecGroupPerm",
 ]

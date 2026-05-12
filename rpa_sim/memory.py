@@ -31,7 +31,7 @@ from enum import Enum, auto
 import struct
 
 if TYPE_CHECKING:
-    from .security_domain import SecurityDomainController
+    from .security_group import SecurityGroupController
 
 
 @dataclass
@@ -527,12 +527,12 @@ class MemoryManager:
         self.page_tables: Dict[int, PageTable] = {}
 
         # 安全域控制器引用
-        self.security_controller: Optional['SecurityDomainController'] = None
+        self.security_controller: Optional['SecurityGroupController'] = None
 
         # 页表到安全域的映射: pagetable_addr -> security_handle
         self.page_table_security: Dict[int, int] = {}
 
-    def set_security_controller(self, controller: 'SecurityDomainController') -> None:
+    def set_security_controller(self, controller: 'SecurityGroupController') -> None:
         """设置安全域控制器"""
         self.security_controller = controller
         # 同时设置到物理内存

@@ -52,7 +52,7 @@ from enum import IntEnum
 PRIORITY_DATA_ABORT = 4         # Highest - data abort exception
 PRIORITY_INSTRUCTION_ABORT = 4  # Instruction abort exception
 PRIORITY_INVALID_INSTRUCTION = 4  # Invalid instruction exception
-PRIORITY_ESCALATE = 3           # ESCALATE trap
+PRIORITY_ASCEND = 3           # ASCEND trap
 PRIORITY_IRQ = 2                # Normal interrupt
 PRIORITY_NORMAL = 1             # Lowest - normal execution
 
@@ -64,7 +64,7 @@ class PriorityController:
     Priority rules:
     - Higher priority events can preempt lower priority
     - During exception handling, IRQs are masked
-    - ESCALATE has higher priority than IRQ
+    - ASCEND has higher priority than IRQ
     """
 
     def __init__(self):
@@ -105,7 +105,7 @@ class PriorityController:
 @dataclass
 class PendingEvent:
     """A pending event waiting to be processed."""
-    event_type: str       # 'exception', 'escalate', 'irq'
+    event_type: str       # 'exception', 'ascend', 'irq'
     priority: int         # Priority level
     vector: int = 0       # Handler vector
     irq_num: int = 0      # IRQ number (for 'irq' type)
@@ -195,7 +195,7 @@ class InterruptController:
 
     优先级系统:
     - PRIORITY_DATA_ABORT = 4 (最高)
-    - PRIORITY_ESCALATE = 3
+    - PRIORITY_ASCEND = 3
     - PRIORITY_IRQ = 2
     - PRIORITY_NORMAL = 1 (最低)
 

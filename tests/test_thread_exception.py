@@ -1,7 +1,7 @@
 """
 Thread and Exception Tests for RPA
 
-使用汇编指令测试 DESCEND/ESCALATE/RETURN 机制。
+使用汇编指令测试 DESCEND/ASCEND/RETURN 机制。
 所有测试使用单一 Core，让指令真正执行域切换。
 
 DomainBlock 布局 (32 字节):
@@ -12,10 +12,10 @@ DomainBlock 布局 (32 字节):
     0x10: ipa_regions      (父域设置，只读)
     0x14: pagetable        (子域设置，可写)
     0x18: child_block      (父域维护)
-    0x1C: security_domain  (系统分配)
+    0x1C: security_group  (系统分配)
     ISA 扩展:
     0x28: saved_sp
-    0x2C: saved_lr (首次 DESCEND 入口地址由父域写入，ESCALATE 保存返回地址)
+    0x2C: saved_lr (首次 DESCEND 入口地址由父域写入，ASCEND 保存返回地址)
     0x30: saved_psr
 """
 
@@ -38,12 +38,12 @@ OFFSET_INTERRUPT_CTRL = 0x0C
 OFFSET_IPA_REGIONS = 0x10
 OFFSET_PAGETABLE = 0x14
 OFFSET_CHILD_BLOCK = 0x18
-OFFSET_SECURITY_DOMAIN = 0x1C
+OFFSET_SECURITY_GROUP = 0x1C
 
 
-class TestDescendEscalate:
+class TestDescendAscend:
     """
-    测试 DESCEND 和 ESCALATE 指令
+    测试 DESCEND 和 ASCEND 指令
     """
 
     def test_first_descend_jumps_to_saved_lr(self):
@@ -79,13 +79,13 @@ class TestDescendEscalate:
         # 子域代码
         core.load_assembly("""
             MOV R1, #42
-            ESCALATE R1
+            ASCEND R1
             HALT
         """, base_addr=entry_addr)
 
-        # 异常处理代码 - 父域接收 ESCALATE
+        # 异常处理代码 - 父域接收 ASCEND
         core.load_assembly("""
-            ; 父域收到 ESCALATE
+            ; 父域收到 ASCEND
             HALT
         """, base_addr=0x3000)
 
@@ -99,9 +99,9 @@ class TestDescendEscalate:
         # R5 不应该被设置（没有执行 MOV R5, #0xBAD）
         assert core.state.get_reg(5) == 0
 
-    def test_escalate_jumps_to_trap_vector(self):
+    def test_ascend_jumps_to_trap_vector(self):
         """
-        ESCALATE 跳转到父域的 trap_vector
+        ASCEND 跳转到父域的 trap_vector
         """
         mem = Memory(size=64 * 1024)
 
@@ -128,7 +128,7 @@ class TestDescendEscalate:
 
         core.load_assembly("""
             MOV R1, #42
-            ESCALATE R1
+            ASCEND R1
             HALT
         """, base_addr=entry_addr)
 
@@ -141,12 +141,12 @@ class TestDescendEscalate:
         core.state.pc = 0x0000
         core.run()
 
-        # 验证：ESCALATE 跳转到了父域的 trap_vector 并执行了异常处理代码
+        # 验证：ASCEND 跳转到了父域的 trap_vector 并执行了异常处理代码
         assert core.state.get_reg(2) == 0xCAFE
 
     def test_descend_updates_pagetable_chain(self):
         """
-        DESCEND 更新 pagetable_chain，ESCALATE 恢复
+        DESCEND 更新 pagetable_chain，ASCEND 恢复
         """
         mem = Memory(size=64 * 1024)
 
@@ -168,7 +168,7 @@ class TestDescendEscalate:
 
         core.load_assembly("""
             MOV R0, #0
-            ESCALATE R0
+            ASCEND R0
             HALT
         """, base_addr=0x2000)
 
@@ -178,7 +178,7 @@ class TestDescendEscalate:
         core.state.pc = 0x0000
         core.run()
 
-        # ESCALATE 后 pagetable_chain 应该恢复为空
+        # ASCEND 后 pagetable_chain 应该恢复为空
         assert core.pagetable_chain == []
 
     def test_shared_memory_between_domains(self):
@@ -218,11 +218,11 @@ class TestDescendEscalate:
             ADD R0, R0, #200
             STR R0, [R1]
             MOV R0, #0
-            ESCALATE R0
+            ASCEND R0
             HALT
         """, base_addr=0x2000)
 
-        # 设置父域的 trap_vector 让 ESCALATE 后 halt
+        # 设置父域的 trap_vector 让 ASCEND 后 halt
         rpa.root_domain.block.trap_vector = 0x3000
         core.load_assembly("HALT", base_addr=0x3000)
 
@@ -258,7 +258,7 @@ class TestDescendEscalate:
 
         core.load_assembly("""
             MOV R1, #1
-            ESCALATE R1
+            ASCEND R1
             HALT
         """, base_addr=entry_addr)
 
@@ -381,7 +381,7 @@ class TestMemoryTranslation:
         core.load_assembly("""
             MOV R1, #0x1000
             LDR R0, [R1]
-            ESCALATE R0
+            ASCEND R0
             HALT
         """, base_addr=0x2000)
 

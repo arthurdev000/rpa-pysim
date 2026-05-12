@@ -53,17 +53,17 @@ class TestRPALogic:
         with pytest.raises(RuntimeError, match="Memory not set"):
             rpa.descend(0x1000)
 
-    def test_escalate_from_root_fails(self):
+    def test_ascend_from_root_fails(self):
         rpa = RPALogic()
 
-        with pytest.raises(RuntimeError, match="Cannot escalate from root"):
-            rpa.escalate(0)
+        with pytest.raises(RuntimeError, match="Cannot ascend from root"):
+            rpa.ascend(0)
 
     def test_stats(self):
         rpa = RPALogic()
         stats = rpa.get_stats()
         assert stats["descend_count"] == 0
-        assert stats["escalate_count"] == 0
+        assert stats["ascend_count"] == 0
 
     def test_descend_conflict_child_block(self):
         """
@@ -89,8 +89,8 @@ class TestRPALogic:
         rpa.descend(child1_addr)
         assert rpa.current_domain.block_addr == child1_addr
 
-        # ESCALATE 回到根域
-        rpa.escalate(0)
+        # ASCEND 回到根域
+        rpa.ascend(0)
         assert rpa.current_domain == rpa.root_domain
 
         # 尝试 DESCEND 到 child2（应该报错，因为 child1 还存在）
@@ -129,8 +129,8 @@ class TestSimpleISA:
 
         assert core.state.get_reg(0) == 30
 
-    def test_descend_escalate(self):
-        """Test DESCEND and ESCALATE instructions"""
+    def test_descend_ascend(self):
+        """Test DESCEND and ASCEND instructions"""
         from rpa_sim.isa_simple import SAVED_LR_OFFSET
         mem = Memory(size=64 * 1024)
 
@@ -142,7 +142,7 @@ class TestSimpleISA:
         # 0x10: ipa_regions (父域设置)
         # 0x14: pagetable (子域设置)
         # 0x18: child_block (父域维护)
-        # 0x1C: security_domain (系统分配)
+        # 0x1C: security_group (系统分配)
         # ISA 扩展:
         # 0x28: saved_sp
         # 0x2C: saved_lr (首次 DESCEND 入口地址由父域写入)
@@ -173,13 +173,13 @@ class TestSimpleISA:
         # 子域代码
         core.load_assembly("""
             MOV R1, #5
-            ESCALATE R1
+            ASCEND R1
             HALT
         """, base_addr=child_entry)
 
         # 父域异常处理程序
         core.load_assembly("""
-            ; 父域收到 ESCALATE
+            ; 父域收到 ASCEND
             MOV R3, #99
             HALT
         """, base_addr=0x3000)
@@ -187,7 +187,7 @@ class TestSimpleISA:
         core.state.pc = 0x1000
         core.run()
 
-        # 验证：ESCALATE 跳转到父域的 trap_vector，执行了 MOV R3, #99
+        # 验证：ASCEND 跳转到父域的 trap_vector，执行了 MOV R3, #99
         assert core.state.get_reg(3) == 99  # 异常处理程序执行了
         # 子域执行了 MOV R1, #5（但寄存器状态在域切换时保存了）
         # R1 的值在子域上下文中，当前是父域的寄存器状态
@@ -334,8 +334,8 @@ class TestIntegration:
         assert read_block.trap_vector == 0x4004
         assert read_block.ipa_regions == 0x50000
 
-    def test_descend_escalate_return_cycle(self):
-        """Test complete DESCEND -> ESCALATE -> RETURN cycle"""
+    def test_descend_ascend_return_cycle(self):
+        """Test complete DESCEND -> ASCEND -> RETURN cycle"""
         mem = Memory(size=64 * 1024)
         rpa = RPALogic()
         rpa.memory = mem
@@ -344,7 +344,7 @@ class TestIntegration:
         block_addr = 0x0800
         child_entry = 0x2000
         parent_exception_handler = 0x3000
-        child_return_point = 0x2008  # After ESCALATE instruction
+        child_return_point = 0x2008  # After ASCEND instruction
 
         mem.write_word(block_addr + 0x00, 32)                    # ctrlblock_size
         mem.write_word(block_addr + 0x08, 0)                     # trap_vector (子域自己的)
@@ -369,15 +369,15 @@ class TestIntegration:
         core.load_assembly("""
             MOV R1, #5
             MOV R0, #1
-            ESCALATE R0
+            ASCEND R0
             ; RETURN 后从这里继续
             MOV R2, #42
             HALT
         """, base_addr=child_entry)
 
-        # 父域异常处理程序（处理子域 ESCALATE，然后 RETURN）
+        # 父域异常处理程序（处理子域 ASCEND，然后 RETURN）
         core.load_assembly("""
-            ; 父域收到 ESCALATE
+            ; 父域收到 ASCEND
             MOV R3, #99
             MOV R0, #0x0800
             RETURN R0
@@ -513,15 +513,15 @@ class TestExitInstruction:
         assert result["is_first"] == True  # 应该是首次 DESCEND（因为之前 EXIT 释放了）
         assert rpa.root_domain.block.child_block == block_addr
 
-    def test_exit_vs_escalate_difference(self):
+    def test_exit_vs_ascend_difference(self):
         """
-        EXIT 与 ESCALATE 的区别：
-        - ESCALATE 后父域可以 RETURN 回子域
+        EXIT 与 ASCEND 的区别：
+        - ASCEND 后父域可以 RETURN 回子域
         - EXIT 后子域被释放，父域无法 RETURN
         """
         mem = Memory(size=64 * 1024)
 
-        # === ESCALATE 场景 ===
+        # === ASCEND 场景 ===
         block_addr1 = 0x0800
         child_entry1 = 0x2000
         mem.write_word(block_addr1 + 0x00, 32)
@@ -537,14 +537,14 @@ class TestExitInstruction:
         core1.load_assembly("""
             MOV R0, #0x0800
             DESCEND R0
-            ; ESCALATE+RETURN 后继续
+            ; ASCEND+RETURN 后继续
             MOV R1, #111
             HALT
         """, base_addr=0x1000)
 
         core1.load_assembly("""
             MOV R0, #1
-            ESCALATE R0
+            ASCEND R0
             ; RETURN 后继续
             MOV R2, #222
             HALT
@@ -560,7 +560,7 @@ class TestExitInstruction:
         core1.state.pc = 0x1000
         core1.run()
 
-        # ESCALATE 后可以 RETURN
+        # ASCEND 后可以 RETURN
         assert core1.state.get_reg(2) == 222  # 子域继续执行了
         assert rpa1.get_depth() == 1  # 在子域
 

@@ -12,42 +12,42 @@ Security Domain Tests - 安全域功能测试
 import pytest
 from rpa_sim import (
     RPALogic, DomainBlock, Memory, MemoryManager,
-    SecurityDomainController, SecurityDomainConfig, SecDomainPerm,
+    SecurityGroupController, SecurityGroupConfig, SecGroupPerm,
     SimpleISA
 )
 
 
-class TestSecurityDomainController:
+class TestSecurityGroupController:
     """安全域控制器测试"""
 
-    def test_create_security_domain(self):
+    def test_create_security_group(self):
         """测试创建安全域"""
         mem = Memory(1024 * 1024)
         mem_mgr = MemoryManager(mem)
-        controller = SecurityDomainController(mem_mgr)
+        controller = SecurityGroupController(mem_mgr)
 
         # 创建新安全域
-        config = SecurityDomainConfig(
+        config = SecurityGroupConfig(
             inherit_from_parent=False,
             create_new=True,
             isolated=True
         )
         handle = controller.create(owner_domain_id=1, config=config)
 
-        assert handle >= SecurityDomainController.HANDLE_BASE
+        assert handle >= SecurityGroupController.HANDLE_BASE
         instance = controller.get_instance(handle)
         assert instance is not None
         assert instance.owner_domain_id == 1
         assert instance.memory_isolated is True
 
-    def test_inherit_security_domain(self):
+    def test_inherit_security_group(self):
         """测试继承父安全域"""
         mem = Memory(1024 * 1024)
         mem_mgr = MemoryManager(mem)
-        controller = SecurityDomainController(mem_mgr)
+        controller = SecurityGroupController(mem_mgr)
 
         # 继承父安全域（默认配置）
-        config = SecurityDomainConfig(inherit_from_parent=True)
+        config = SecurityGroupConfig(inherit_from_parent=True)
         handle = controller.create(owner_domain_id=1, config=config)
 
         # 应该返回 root 安全域
@@ -57,10 +57,10 @@ class TestSecurityDomainController:
         """测试多域共享同一安全域"""
         mem = Memory(1024 * 1024)
         mem_mgr = MemoryManager(mem)
-        controller = SecurityDomainController(mem_mgr)
+        controller = SecurityGroupController(mem_mgr)
 
         # 创建安全域
-        config = SecurityDomainConfig(create_new=True, isolated=True)
+        config = SecurityGroupConfig(create_new=True, isolated=True)
         handle = controller.create(owner_domain_id=1, config=config)
 
         # 绑定多个域
@@ -72,14 +72,14 @@ class TestSecurityDomainController:
         assert 1 in instance.bound_domains
         assert 2 in instance.bound_domains
 
-    def test_security_domain_destroy(self):
+    def test_security_group_destroy(self):
         """测试销毁安全域"""
         mem = Memory(1024 * 1024)
         mem_mgr = MemoryManager(mem)
-        controller = SecurityDomainController(mem_mgr)
+        controller = SecurityGroupController(mem_mgr)
 
         # 创建安全域
-        config = SecurityDomainConfig(create_new=True)
+        config = SecurityGroupConfig(create_new=True)
         handle = controller.create(owner_domain_id=1, config=config)
 
         # 绑定域
@@ -99,10 +99,10 @@ class TestSecurityDomainController:
         """测试强制销毁（仅 root 可用）"""
         mem = Memory(1024 * 1024)
         mem_mgr = MemoryManager(mem)
-        controller = SecurityDomainController(mem_mgr)
+        controller = SecurityGroupController(mem_mgr)
 
         # 创建安全域
-        config = SecurityDomainConfig(create_new=True)
+        config = SecurityGroupConfig(create_new=True)
         handle = controller.create(owner_domain_id=1, config=config)
 
         # 绑定域
@@ -119,10 +119,10 @@ class TestSecurityDomainController:
         """测试 DMA 访问控制"""
         mem = Memory(1024 * 1024)
         mem_mgr = MemoryManager(mem)
-        controller = SecurityDomainController(mem_mgr)
+        controller = SecurityGroupController(mem_mgr)
 
         # 创建安全域
-        config = SecurityDomainConfig(create_new=True)
+        config = SecurityGroupConfig(create_new=True)
         handle = controller.create(owner_domain_id=1, config=config)
 
         # 绑定两个域
@@ -145,10 +145,10 @@ class TestSecurityDomainController:
         """测试机密计算域"""
         mem = Memory(1024 * 1024)
         mem_mgr = MemoryManager(mem)
-        controller = SecurityDomainController(mem_mgr)
+        controller = SecurityGroupController(mem_mgr)
 
         # 创建机密计算域
-        config = SecurityDomainConfig(
+        config = SecurityGroupConfig(
             create_new=True,
             isolated=True,
             encrypted=True,
@@ -172,10 +172,10 @@ class TestSecurityDomainController:
         """测试加密内存"""
         mem = Memory(1024 * 1024)
         mem_mgr = MemoryManager(mem)
-        controller = SecurityDomainController(mem_mgr)
+        controller = SecurityGroupController(mem_mgr)
 
         # 创建加密安全域
-        config = SecurityDomainConfig(create_new=True, encrypted=True)
+        config = SecurityGroupConfig(create_new=True, encrypted=True)
         handle = controller.create(owner_domain_id=1, config=config)
 
         # 设置加密区域
@@ -187,14 +187,14 @@ class TestSecurityDomainController:
         assert instance.encrypted is True
 
 
-class TestSecurityDomainWithRPALogic:
+class TestSecurityGroupWithRPALogic:
     """安全域与 RPALogic 集成测试"""
 
-    def test_descend_with_security_domain(self):
+    def test_descend_with_security_group(self):
         """测试 DESCEND 时绑定安全域"""
         mem = Memory(1024 * 1024)
         mem_mgr = MemoryManager(mem)
-        controller = SecurityDomainController(mem_mgr)
+        controller = SecurityGroupController(mem_mgr)
 
         rpa = RPALogic()
         rpa.memory = mem
@@ -205,7 +205,7 @@ class TestSecurityDomainWithRPALogic:
         block = DomainBlock(ctrlblock_size=32, trap_vector=0x8004)
         mem.write_word(block_addr + 0x00, block.ctrlblock_size)
         mem.write_word(block_addr + 0x08, block.trap_vector)  # trap_vector at 0x08
-        mem.write_word(block_addr + 0x1C, 0)  # security_domain = 0 (继承)
+        mem.write_word(block_addr + 0x1C, 0)  # security_group = 0 (继承)
 
         # DESCEND
         result = rpa.descend(block_addr)
@@ -214,20 +214,20 @@ class TestSecurityDomainWithRPALogic:
         assert rpa.current_domain.domain_id == 1
 
         # 验证安全域继承
-        assert rpa.current_domain.block.security_domain == controller.root_handle
+        assert rpa.current_domain.block.security_group == controller.root_handle
 
-    def test_descend_with_new_security_domain(self):
+    def test_descend_with_new_security_group(self):
         """测试 DESCEND 时创建新安全域"""
         mem = Memory(1024 * 1024)
         mem_mgr = MemoryManager(mem)
-        controller = SecurityDomainController(mem_mgr)
+        controller = SecurityGroupController(mem_mgr)
 
         rpa = RPALogic()
         rpa.memory = mem
         rpa.set_security_controller(controller)
 
         # 先创建安全域
-        config = SecurityDomainConfig(create_new=True, isolated=True)
+        config = SecurityGroupConfig(create_new=True, isolated=True)
         sec_handle = controller.create(owner_domain_id=0, config=config)
 
         # 准备 DomainBlock
@@ -241,31 +241,31 @@ class TestSecurityDomainWithRPALogic:
         result = rpa.descend(block_addr)
 
         assert result['is_first'] is True
-        assert rpa.current_domain.block.security_domain == sec_handle
+        assert rpa.current_domain.block.security_group == sec_handle
 
         # 验证绑定
         instance = controller.get_instance(sec_handle)
         assert rpa.current_domain.domain_id in instance.bound_domains
 
-    def test_exit_unbinds_security_domain(self):
+    def test_exit_unbinds_security_group(self):
         """测试 EXIT 时解绑安全域"""
         mem = Memory(1024 * 1024)
         mem_mgr = MemoryManager(mem)
-        controller = SecurityDomainController(mem_mgr)
+        controller = SecurityGroupController(mem_mgr)
 
         rpa = RPALogic()
         rpa.memory = mem
         rpa.set_security_controller(controller)
 
         # 创建安全域
-        config = SecurityDomainConfig(create_new=True, isolated=True)
+        config = SecurityGroupConfig(create_new=True, isolated=True)
         sec_handle = controller.create(owner_domain_id=0, config=config)
 
         # 准备子域 DomainBlock
         child_block_addr = 0x1000
         mem.write_word(child_block_addr + 0x00, 32)
         mem.write_word(child_block_addr + 0x08, 0x8004)  # trap_vector at 0x08
-        mem.write_word(child_block_addr + 0x1C, sec_handle)  # security_domain at 0x1C
+        mem.write_word(child_block_addr + 0x1C, sec_handle)  # security_group at 0x1C
 
         # DESCEND
         rpa.descend(child_block_addr)
@@ -276,21 +276,21 @@ class TestSecurityDomainWithRPALogic:
         assert child_domain_id in instance.bound_domains
 
         # EXIT
-        rpa.escalate(0, release=True)
+        rpa.ascend(0, release=True)
 
         # 验证解绑
         instance = controller.get_instance(sec_handle)
         assert child_domain_id not in instance.bound_domains
 
 
-class TestSecurityDomainSysop:
-    """sysop secdomain 指令测试"""
+class TestSecurityGroupSysop:
+    """sysop secgroup 指令测试"""
 
     def test_sysop_create(self):
-        """测试 sysop secdomain create"""
+        """测试 sysop secgroup create"""
         mem = Memory(1024 * 1024)
         mem_mgr = MemoryManager(mem)
-        controller = SecurityDomainController(mem_mgr)
+        controller = SecurityGroupController(mem_mgr)
 
         rpa = RPALogic()
         rpa.memory = mem
@@ -298,17 +298,17 @@ class TestSecurityDomainSysop:
         isa = SimpleISA(rpa, mem, mem_mgr, security_controller=controller)
         isa.state.set_reg(0, 0x01)  # isolated
 
-        # 模拟 sysop secdomain, create
-        isa._execute_sysop_secdomain(0x01, 0, 0, 1, 0)
+        # 模拟 sysop secgroup, create
+        isa._execute_sysop_secgroup(0x01, 0, 0, 1, 0)
 
         handle = isa.state.get_reg(1)
-        assert handle >= SecurityDomainController.HANDLE_BASE
+        assert handle >= SecurityGroupController.HANDLE_BASE
 
     def test_sysop_destroy(self):
-        """测试 sysop secdomain destroy"""
+        """测试 sysop secgroup destroy"""
         mem = Memory(1024 * 1024)
         mem_mgr = MemoryManager(mem)
-        controller = SecurityDomainController(mem_mgr)
+        controller = SecurityGroupController(mem_mgr)
 
         rpa = RPALogic()
         rpa.memory = mem
@@ -316,13 +316,13 @@ class TestSecurityDomainSysop:
         isa = SimpleISA(rpa, mem, mem_mgr, security_controller=controller)
 
         # 创建安全域
-        config = SecurityDomainConfig(create_new=True)
+        config = SecurityGroupConfig(create_new=True)
         handle = controller.create(0, config)
 
         # destroy 需要 ref_count=0，创建后默认 ref_count=0
         # 销毁：rd=0 (结果存入R0), rn=1 (handle从R1获取)
         isa.state.set_reg(1, handle)  # R1 = handle
-        isa._execute_sysop_secdomain(0x02, 0, 0, 0, 1)  # destroy, rd=0, rn=1
+        isa._execute_sysop_secgroup(0x02, 0, 0, 0, 1)  # destroy, rd=0, rn=1
 
         # destroy 返回成功，实例被移除
         result = isa.state.get_reg(0)  # rd 返回值
@@ -330,10 +330,10 @@ class TestSecurityDomainSysop:
         assert controller.get_instance(handle) is None
 
     def test_sysop_get_handle(self):
-        """测试 sysop secdomain get_handle"""
+        """测试 sysop secgroup get_handle"""
         mem = Memory(1024 * 1024)
         mem_mgr = MemoryManager(mem)
-        controller = SecurityDomainController(mem_mgr)
+        controller = SecurityGroupController(mem_mgr)
 
         rpa = RPALogic()
         rpa.memory = mem
@@ -342,7 +342,7 @@ class TestSecurityDomainSysop:
 
         # 获取 root 域的安全域 handle
         isa.state.set_reg(0, 0)  # domain_id = 0
-        isa._execute_sysop_secdomain(0x0A, 0, 0, 1, 0)
+        isa._execute_sysop_secgroup(0x0A, 0, 0, 1, 0)
 
         handle = isa.state.get_reg(1)
         assert handle == controller.root_handle
@@ -411,7 +411,7 @@ class TestDomainIDAllocation:
         """测试从安全子系统分配 domain_id"""
         mem = Memory(1024 * 1024)
         mem_mgr = MemoryManager(mem)
-        controller = SecurityDomainController(mem_mgr)
+        controller = SecurityGroupController(mem_mgr)
         controller.enabled = True
 
         rpa = RPALogic()
@@ -419,14 +419,14 @@ class TestDomainIDAllocation:
         rpa.set_security_controller(controller)
 
         # 创建安全域
-        config = SecurityDomainConfig(create_new=True)
+        config = SecurityGroupConfig(create_new=True)
         sec_handle = controller.create(0, config)
 
         # 准备 DomainBlock
         block_addr = 0x1000
         mem.write_word(block_addr + 0x00, 32)
         mem.write_word(block_addr + 0x08, 0x8004)  # trap_vector at 0x08
-        mem.write_word(block_addr + 0x1C, sec_handle)  # security_domain at 0x1C
+        mem.write_word(block_addr + 0x1C, sec_handle)  # security_group at 0x1C
 
         # DESCEND
         result = rpa.descend(block_addr)
