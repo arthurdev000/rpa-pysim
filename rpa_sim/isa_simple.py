@@ -30,21 +30,21 @@ RPA Spec Field 字段布局（32 位系统为 32 字节）：
     ├──────────┼────────────────────────────────────────────────────────┤
     │ 0x00     │ ctrlblock_size      控制块大小 (单位: word, 父域设置)  │
     │ 0x04     │ domain_id           域ID (系统分配，只读)              │
-    │ 0x08     │ trap_vector         Trap 处理入口 (子域设置，ESCALATE) │
+    │ 0x08     │ trap_vector         Trap 处理入口 (子域设置，ASCEND) │
     │ 0x0C     │ interrupt_ctrl      中断控制器 handle (系统分配)       │
     │ 0x10     │ ipa_regions         IPA 区域表地址 (父域设置，只读)    │
     │ 0x14     │ pagetable           页表地址 (子域设置，可写)          │
     │ 0x18     │ child_block         子域控制块地址 (父域维护)          │
-    │ 0x1C     │ security_domain     安全域 handle (系统分配)           │
+    │ 0x1C     │ security_group     安全域 handle (系统分配)           │
     ├──────────┴────────────────────────────────────────────────────────┤
     │ 字段所有权：父域设置 (0x00, 0x10, 0x18) / 子域设置 (0x08, 0x14)    │
     │            系统分配 (0x04, 0x0C, 0x1C)                             │
     ├──────────┬────────────────────────────────────────────────────────┤
     │          │ 以下为 SimpleISA 扩展字段 (ISA Context Field)          │
     ├──────────┬────────────────────────────────────────────────────────┤
-    │ 0x28     │ saved_sp            ESCALATE 保存的栈指针              │
-    │ 0x2C     │ saved_lr            ESCALATE 保存的返回地址            │
-    │ 0x30     │ saved_psr           ESCALATE 保存的程序状态             │
+    │ 0x28     │ saved_sp            ASCEND 保存的栈指针              │
+    │ 0x2C     │ saved_lr            ASCEND 保存的返回地址            │
+    │ 0x30     │ saved_psr           ASCEND 保存的程序状态             │
     │ 0x34     │ reserved            保留                               │
     ├──────────┴────────────────────────────────────────────────────────┤
     │ 中断现场保存区域                                                    │
@@ -74,7 +74,7 @@ IPA 区域表 / 页表条目格式:
 数据处理：MOV, ADD, SUB, CMP, AND, ORR
 加载存储：LDR, STR
 分支：B, BEQ, BNE, BL, BX
-RPA 指令：DESCEND, ESCALATE, RETURN, SYSOP
+RPA 指令：DESCEND, ASCEND, RETURN, SYSOP
 特殊：NOP, HALT
 
 调用标准 (Calling Convention):
@@ -83,7 +83,7 @@ RPA 指令：DESCEND, ESCALATE, RETURN, SYSOP
 寄存器约定:
 - r0-r3:  参数/返回值寄存器 (caller-saved)
           - DESCEND 前: 父域在 r0 放控制块地址，r1-r3 可放额外参数
-          - ESCALATE 前: 子域在 r0 放 service_type，r1-r3 可放额外参数
+          - ASCEND 前: 子域在 r0 放 service_type，r1-r3 可放额外参数
           - 返回时: r0-r3 包含返回值
 - r4-r12: callee-saved，由被调用者（编译器）负责保存/恢复
 - r13 (SP): 栈指针
@@ -91,7 +91,7 @@ RPA 指令：DESCEND, ESCALATE, RETURN, SYSOP
 - r15 (PC): 程序计数器
 
 上下文保存策略:
-- ESCALATE/RETURN: 保存 SP, LR, PSR (12 字节)
+- ASCEND/RETURN: 保存 SP, LR, PSR (12 字节)
 - 中断: 保存所有寄存器 R0-R15 + PSR (68 字节)
 
 地址翻译:
@@ -132,7 +132,7 @@ from .interrupt import (
     PRIORITY_DATA_ABORT,
     PRIORITY_INSTRUCTION_ABORT,
     PRIORITY_INVALID_INSTRUCTION,
-    PRIORITY_ESCALATE,
+    PRIORITY_ASCEND,
     PRIORITY_IRQ,
     PRIORITY_NORMAL,
     PriorityController,
@@ -141,7 +141,7 @@ from .interrupt import (
 
 
 # DomainBlock 上下文保存区域偏移 (在 DCB 标准字段之后)
-# DCB 标准字段结束于 0x1C (security_domain)，ISA 扩展区从 0x28 开始
+# DCB 标准字段结束于 0x1C (security_group)，ISA 扩展区从 0x28 开始
 # 0x20-0x27 保留供未来 DCB 字段使用
 SAVED_SP_OFFSET = 0x28    # ISA 保存的栈指针
 SAVED_LR_OFFSET = 0x2C    # ISA 保存的链接寄存器（返回地址）
@@ -205,9 +205,9 @@ class OpCode(Enum):
 
     # RPA 指令
     DESCEND = auto()
-    ESCALATE = auto()
+    ASCEND = auto()
     RETURN = auto()
-    EXIT = auto()  # ESCALATE + release child domain
+    EXIT = auto()  # ASCEND + release child domain
 
     # 系统操作
     SYSOP = auto()
@@ -406,7 +406,7 @@ class Assembler:
             'BL': OpCode.BL,
             'BX': OpCode.BX,
             'DESCEND': OpCode.DESCEND,
-            'ESCALATE': OpCode.ESCALATE,
+            'ASCEND': OpCode.ASCEND,
             'RETURN': OpCode.RETURN,
             'EXIT': OpCode.EXIT,
             'SYSOP': OpCode.SYSOP,
@@ -476,7 +476,7 @@ class Assembler:
             rm = self.parse_register(operands.strip())
             return Instruction(opcode=opcode, rm=rm)
 
-        elif opcode in (OpCode.DESCEND, OpCode.ESCALATE, OpCode.RETURN, OpCode.EXIT):
+        elif opcode in (OpCode.DESCEND, OpCode.ASCEND, OpCode.RETURN, OpCode.EXIT):
             rd = self.parse_register(operands.strip())
             return Instruction(opcode=opcode, rd=rd)
 
@@ -554,9 +554,9 @@ class SimpleISA:
     - ipa_regions 保存当前域的 IPA 约束
     - 翻译失败触发 TranslationError (包含 fault_owner)
 
-    DESCEND/ESCALATE/RETURN 指令:
+    DESCEND/ASCEND/RETURN 指令:
     - DESCEND: 读取 DomainBlock，跳转到 saved_lr (0x2C)
-    - ESCALATE: 保存上下文，切换到父域
+    - ASCEND: 保存上下文，切换到父域
     - RETURN: 从控制块恢复上下文
 
     中断处理:
@@ -574,7 +574,7 @@ class SimpleISA:
             memory: Memory 实例（物理内存）
             memory_manager: MemoryManager 实例（带翻译的读写）
             interrupt_controller: InterruptController 实例（中断管理）
-            security_controller: SecurityDomainController 实例（安全域管理）
+            security_controller: SecurityGroupController 实例（安全域管理）
         """
         self.state = CPUState()
         self.rpa = rpa
@@ -772,8 +772,8 @@ class SimpleISA:
         elif opcode == OpCode.DESCEND:
             self._execute_descend(inst)
 
-        elif opcode == OpCode.ESCALATE:
-            self._execute_escalate(inst)
+        elif opcode == OpCode.ASCEND:
+            self._execute_ascend(inst)
 
         elif opcode == OpCode.EXIT:
             self._execute_exit(inst)
@@ -905,7 +905,7 @@ class SimpleISA:
 
         # 安全域操作
         if op == 0x04 and self.security_controller:
-            self._execute_sysop_secdomain(subop, arg1, arg2, inst.rd, inst.rn)
+            self._execute_sysop_secgroup(subop, arg1, arg2, inst.rd, inst.rn)
             return
 
         # 其他操作使用自定义 handler
@@ -1068,14 +1068,14 @@ class SimpleISA:
 
             self.state.set_reg(rd, count)
 
-    def _execute_sysop_secdomain(self, subop: int, arg1: int, arg2: int, rd: int, rn: int) -> None:
-        """执行 sysop secdomain 指令"""
+    def _execute_sysop_secgroup(self, subop: int, arg1: int, arg2: int, rd: int, rn: int) -> None:
+        """执行 sysop secgroup 指令"""
         if not self.security_controller:
             return
 
-        from .security_domain import SecurityDomainConfig
+        from .security_group import SecurityGroupConfig
 
-        # SecDomainSubOp 操作码
+        # SecGroupSubOp 操作码
         SECDOMAIN_CREATE = 0x01
         SECDOMAIN_DESTROY = 0x02
         SECDOMAIN_BIND = 0x03
@@ -1088,11 +1088,11 @@ class SimpleISA:
         SECDOMAIN_GET_HANDLE = 0x0A
 
         if subop == SECDOMAIN_CREATE:
-            # sysop secdomain, create, R0, R1
+            # sysop secgroup, create, R0, R1
             # R0 = config flags (bit 0: isolated, bit 1: encrypted, bit 2: confidential)
             # R1 = 返回 handle
             flags = self.state.get_reg(0)
-            config = SecurityDomainConfig(
+            config = SecurityGroupConfig(
                 inherit_from_parent=False,
                 create_new=True,
                 isolated=bool(flags & 0x01),
@@ -1104,13 +1104,13 @@ class SimpleISA:
             self.state.set_reg(1, handle)
 
         elif subop == SECDOMAIN_DESTROY:
-            # sysop secdomain, destroy, Rn
+            # sysop secgroup, destroy, Rn
             handle = self.state.get_reg(rn) if rn else arg1
             success = self.security_controller.destroy(handle)
             self.state.set_reg(rd, 1 if success else 0)
 
         elif subop == SECDOMAIN_FORCE_DESTROY:
-            # sysop secdomain, force_destroy, Rn
+            # sysop secgroup, force_destroy, Rn
             # 仅 root 域可用
             handle = self.state.get_reg(rn) if rn else arg1
             if self.rpa.current_domain.domain_id == 0:
@@ -1120,7 +1120,7 @@ class SimpleISA:
                 self.state.set_reg(rd, 0)  # 非根域无法强制销毁
 
         elif subop == SECDOMAIN_BIND:
-            # sysop secdomain, bind, Rn, R1
+            # sysop secgroup, bind, Rn, R1
             # Rn = handle, R1 = domain_id
             handle = self.state.get_reg(rn) if rn else arg1
             domain_id = self.state.get_reg(1)
@@ -1128,7 +1128,7 @@ class SimpleISA:
             self.state.set_reg(rd, 1 if success else 0)
 
         elif subop == SECDOMAIN_UNBIND:
-            # sysop secdomain, unbind, Rn, R1
+            # sysop secgroup, unbind, Rn, R1
             # Rn = handle, R1 = domain_id
             handle = self.state.get_reg(rn) if rn else arg1
             domain_id = self.state.get_reg(1)
@@ -1136,14 +1136,14 @@ class SimpleISA:
             self.state.set_reg(rd, 1 if success else 0)
 
         elif subop == SECDOMAIN_GET_ID:
-            # sysop secdomain, get_id, Rn, Rd
+            # sysop secgroup, get_id, Rn, Rd
             # Rn = handle, Rd = 返回 domain_id
             handle = self.state.get_reg(rn) if rn else arg1
             domain_id = self.security_controller.allocate_domain_id(handle)
             self.state.set_reg(rd, domain_id)
 
         elif subop == SECDOMAIN_SET_ENCRYPTION:
-            # sysop secdomain, set_encryption, Rn, R1
+            # sysop secgroup, set_encryption, Rn, R1
             # Rn = handle, R1 = (start << 16) | size (高 16 位为起始地址低 16 位，低 16 位为大小)
             # 注意：简化版本，实际应使用两个寄存器
             handle = self.state.get_reg(rn) if rn else arg1
@@ -1156,7 +1156,7 @@ class SimpleISA:
             self.state.set_reg(rd, 1 if success else 0)
 
         elif subop == SECDOMAIN_ADD_ACCESSOR:
-            # sysop secdomain, add_accessor, Rn, R1
+            # sysop secgroup, add_accessor, Rn, R1
             # Rn = handle, R1 = accessor_domain_id
             handle = self.state.get_reg(rn) if rn else arg1
             accessor_id = self.state.get_reg(1)
@@ -1164,7 +1164,7 @@ class SimpleISA:
             self.state.set_reg(rd, 1 if success else 0)
 
         elif subop == SECDOMAIN_REMOVE_ACCESSOR:
-            # sysop secdomain, remove_accessor, Rn, R1
+            # sysop secgroup, remove_accessor, Rn, R1
             # Rn = handle, R1 = accessor_domain_id
             handle = self.state.get_reg(rn) if rn else arg1
             accessor_id = self.state.get_reg(1)
@@ -1172,7 +1172,7 @@ class SimpleISA:
             self.state.set_reg(rd, 1 if success else 0)
 
         elif subop == SECDOMAIN_GET_HANDLE:
-            # sysop secdomain, get_handle, R0, Rd
+            # sysop secgroup, get_handle, R0, Rd
             # R0 = domain_id, Rd = 返回 handle
             domain_id = self.state.get_reg(0)
             handle = self.security_controller.get_domain_security_handle(domain_id)
@@ -1289,7 +1289,7 @@ class SimpleISA:
         3. 调用 ISA.prepare_descend() 处理上下文
         4. 跳转到 saved_lr (统一入口)
            - 首次: 父域在 DESCEND 前写入入口地址到 saved_lr
-           - 后续: ESCALATE 已保存返回地址到 saved_lr
+           - 后续: ASCEND 已保存返回地址到 saved_lr
         5. 更新 pagetable_chain 和 ipa_regions
 
         注意：首次和后续 DESCEND 统一使用 saved_lr 作为入口点
@@ -1306,7 +1306,7 @@ class SimpleISA:
 
         # 统一从 saved_lr 获取入口地址
         # 首次 DESCEND: 父域在执行 DESCEND 前写入入口到 saved_lr
-        # 后续 DESCEND: ESCALATE 已保存返回地址到 saved_lr
+        # 后续 DESCEND: ASCEND 已保存返回地址到 saved_lr
         self.state.pc = self.state.lr
 
         # 更新页表链和 IPA 区域
@@ -1316,33 +1316,33 @@ class SimpleISA:
         # 更新 domain_block_addr
         self.domain_block_addr = block_addr
 
-    def _execute_escalate(self, inst: Instruction, release: bool = False) -> None:
+    def _execute_ascend(self, inst: Instruction, release: bool = False) -> None:
         """
-        执行 ESCALATE/EXIT 指令
+        执行 ASCEND/EXIT 指令
 
         RTL 操作：
         1. 读取 service_type
-        2. 调用 ISA.complete_escalate() 保存上下文
+        2. 调用 ISA.complete_ascend() 保存上下文
         3. 切换到父域，跳转到 trap_vector
 
-        ESCALATE 具有高于 IRQ 的优先级。
+        ASCEND 具有高于 IRQ 的优先级。
 
         Args:
             inst: 指令
-            release: True 表示 EXIT（释放子域），False 表示 ESCALATE
+            release: True 表示 EXIT（释放子域），False 表示 ASCEND
         """
         service_type = self.state.get_reg(inst.rd)
         block_addr = self.domain_block_addr
 
-        # 进入 ESCALATE 优先级
-        self.priority_controller.enter(PRIORITY_ESCALATE)
-        self.state.current_priority = PRIORITY_ESCALATE
+        # 进入 ASCEND 优先级
+        self.priority_controller.enter(PRIORITY_ASCEND)
+        self.state.current_priority = PRIORITY_ASCEND
 
         # RTL 调用 ISA 接口保存上下文
-        self.complete_escalate(block_addr, service_type)
+        self.complete_ascend(block_addr, service_type)
 
         # 通过 RPALogic 切换域
-        result = self.rpa.escalate(service_type, release=release)
+        result = self.rpa.ascend(service_type, release=release)
         vector = result.get("vector", 0)
         if vector:
             self.state.pc = vector
@@ -1361,10 +1361,10 @@ class SimpleISA:
         """
         执行 EXIT 指令
 
-        EXIT = ESCALATE(release=True)
+        EXIT = ASCEND(release=True)
         子域终止，父域无法 RETURN，子域控制块可被重新使用。
         """
-        self._execute_escalate(inst, release=True)
+        self._execute_ascend(inst, release=True)
 
     def _execute_return(self, inst: Instruction) -> None:
         """
@@ -1418,12 +1418,12 @@ class SimpleISA:
 
         # 恢复上下文（包括 LR）
         # 首次: saved_lr 由父域设置为入口地址
-        # 后续: saved_lr 由 ESCALATE 保存返回地址
+        # 后续: saved_lr 由 ASCEND 保存返回地址
         self._restore_context(block_addr)
 
-    def complete_escalate(self, block_addr: int, service_type: int) -> None:
+    def complete_ascend(self, block_addr: int, service_type: int) -> None:
         """
-        RPALogic pseudo-RTL 在 ESCALATE 后自动调用
+        RPALogic pseudo-RTL 在 ASCEND 后自动调用
 
         保存子域上下文到子域 DomainBlock：
         - SP (r13)

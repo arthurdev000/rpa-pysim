@@ -44,7 +44,7 @@ root_domain (最高特权，系统启动时创建)
 0x14    domain_id             4       域ID（系统分配）
 0x18    pagetable             4       页表地址（子域设置，子域可写）
 0x1C    child_block           4       子域控制块地址（父域维护）
-0x20    security_domain       4       安全域 handle
+0x20    security_group       4       安全组 handle
 0x24    access_id             4       访问 ID (DMA 用)
 0x28    saved_sp              4       保存的栈指针（ISA扩展）
 0x2C    saved_lr              4       保存的返回地址（ISA扩展）
@@ -60,7 +60,7 @@ root_domain (最高特权，系统启动时创建)
 
 #### exception_vector (0x04)
 - 异常处理入口地址
-- 所有非中断异常（包括 ESCALATE）跳转到此地址
+- 所有非中断异常（包括 ASCEND）跳转到此地址
 - 值为 0 表示禁用异常处理，异常直接传播到父域
 
 #### reserved_08 (0x08)
@@ -79,7 +79,7 @@ root_domain (最高特权，系统启动时创建)
 
 #### domain_id (0x14)
 - 域 ID，由系统分配
-- 用于调试和安全子系统
+- 用于调试和安全组系统
 
 #### pagetable (0x18)
 - 页表地址
@@ -92,8 +92,8 @@ root_domain (最高特权，系统启动时创建)
 - 由父域维护
 - 用于 RETURN 指令返回子域
 
-#### security_domain (0x20)
-- 安全域 handle
+#### security_group (0x20)
+- 安全组 handle
 - 用于内存加密和 DMA 访问控制
 
 #### access_id (0x24)
@@ -102,12 +102,12 @@ root_domain (最高特权，系统启动时创建)
 
 #### saved_sp (0x28)
 - ISA 保存的栈指针
-- ESCALATE 时保存，RETURN 时恢复
+- ASCEND 时保存，RETURN 时恢复
 
 #### saved_lr (0x2C)
 - ISA 保存的返回地址
 - 首次 DESCEND：父域写入入口地址
-- ESCALATE：保存返回地址
+- ASCEND：保存返回地址
 - RETURN：从该地址恢复执行
 
 #### saved_psr (0x30)
@@ -196,7 +196,7 @@ arg2:   操作数2
 | IRQ | 0x01 | 中断操作 |
 | MEMTABLE | 0x02 | IPA 区域表操作 |
 | PAGETABLE | 0x03 | 页表操作 |
-| SECDOMAIN | 0x04 | 安全域操作 |
+| SECDOMAIN | 0x04 | 安全组操作 |
 
 ### 子操作码定义
 
@@ -281,17 +281,17 @@ DESCEND Rd    ; Rd = 控制块地址
      - 跳转到 saved_lr（由父域预先设置）
 4. 清除流水线（上下文同步）
 
-### ESCALATE
+### ASCEND
 
 ```
-ESCALATE Rd    ; Rd = 服务类型/参数
+ASCEND Rd    ; Rd = 服务类型/参数
 ```
 
 执行流程：
 1. 将 Rd 值写入当前域控制块的 return_value
 2. 保存当前上下文到控制块（saved_pc, saved_lr, saved_sp, ...）
 3. 切换到父域
-4. 跳转到父域的 exception_vector（异常类型 = ESCALATE）
+4. 跳转到父域的 exception_vector（异常类型 = ASCEND）
 5. 清除流水线（上下文同步）
 
 ### RETURN
@@ -314,7 +314,7 @@ RETURN        ; 返回子域
 
 | 类型 | 编码 | 跳转目标 |
 |------|------|----------|
-| ESCALATE | 0x00 | exception_vector |
+| ASCEND | 0x00 | exception_vector |
 | PAGE_FAULT | 0x01 | exception_vector |
 | ILLEGAL_INSTRUCTION | 0x02 | exception_vector |
 | PRIVILEGE_VIOLATION | 0x03 | exception_vector |
@@ -367,7 +367,7 @@ RETURN        ; 返回子域
 
 1. **Level → Domain** - 重命名
 2. **LevelConfig → DomainBlock** - 从 Python 对象改为内存结构
-3. **ESCALATE 行为** - 跳转到父域 exception_vector，而非查找 handler
+3. **ASCEND 行为** - 跳转到父域 exception_vector，而非查找 handler
 4. **上下文保存** - 硬件自动保存/恢复
 
 ### 需要删除

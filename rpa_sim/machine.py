@@ -89,9 +89,9 @@ class Machine:
         """进入子域"""
         return self.rpa.descend(block_addr)
 
-    def escalate(self, service_type: int) -> Any:
+    def ascend(self, service_type: int) -> Any:
         """请求父域服务"""
-        return self.rpa.escalate(service_type)
+        return self.rpa.ascend(service_type)
 
     def run(self, max_steps: int = 10000) -> int:
         """运行代码"""

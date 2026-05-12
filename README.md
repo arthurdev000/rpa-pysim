@@ -56,7 +56,7 @@ core.run()
 | 指令 | 说明 |
 |------|------|
 | `DESCEND Rn` | 进入子域，Rn为子域控制块地址 |
-| `ESCALATE Rn` | 请求父域服务，Rn为服务类型 |
+| `ASCEND Rn` | 请求父域服务，Rn为服务类型 |
 | `RETURN Rn` | 从父域返回子域，Rn为子域控制块地址 |
 | `EXIT Rn` | 退出子域并释放资源，Rn=0 |
 
@@ -72,7 +72,7 @@ core.run()
 | 0x14 | domain_id | 域ID（系统分配） |
 | 0x18 | pagetable | 页表地址（子域设置，子域可写） |
 | 0x1C | child_block | 子域控制块地址（父域维护） |
-| 0x20 | security_domain | 安全域 handle |
+| 0x20 | security_group | 安全组 handle |
 | 0x24 | access_id | 访问 ID (DMA 用) |
 | 0x28 | saved_sp | 保存的栈指针（ISA扩展） |
 | 0x2C | saved_lr | 保存的返回地址（ISA扩展） |

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from .memory import Memory, MemoryManager
 
 
-class SecDomainPerm(IntEnum):
+class SecGroupPerm(IntEnum):
     """安全域权限位"""
     CREATE = 0x01      # 可创建子安全域
     DESTROY = 0x02     # 可销毁安全域
@@ -31,7 +31,7 @@ class SecDomainPerm(IntEnum):
 
 
 @dataclass
-class SecurityDomainConfig:
+class SecurityGroupConfig:
     """安全域配置参数"""
     inherit_from_parent: bool = True    # 是否继承父安全域
     create_new: bool = False            # 创建新安全域
@@ -42,7 +42,7 @@ class SecurityDomainConfig:
 
 
 @dataclass
-class SecurityDomain:
+class SecurityGroup:
     """
     安全域实例
 
@@ -93,7 +93,7 @@ class EncryptedRegion:
         return self.encrypt(data)
 
 
-class SecurityDomainController:
+class SecurityGroupController:
     """
     全局安全域控制器
 
@@ -119,7 +119,7 @@ class SecurityDomainController:
         self.memory_manager = memory_manager
 
         # 实例映射
-        self.instances: Dict[int, SecurityDomain] = {}
+        self.instances: Dict[int, SecurityGroup] = {}
 
         # domain_id 到 handle 的映射
         self.domain_id_to_handle: Dict[int, int] = {}
@@ -147,7 +147,7 @@ class SecurityDomainController:
         domain_id = self._next_domain_id
         self._next_domain_id += 1
 
-        instance = SecurityDomain(
+        instance = SecurityGroup(
             handle=handle,
             owner_domain_id=0,
             domain_id=domain_id,
@@ -165,7 +165,7 @@ class SecurityDomainController:
         return handle
 
     def create(self, owner_domain_id: int,
-               config: Optional[SecurityDomainConfig] = None,
+               config: Optional[SecurityGroupConfig] = None,
                parent_handle: int = 0) -> int:
         """
         创建安全域
@@ -179,7 +179,7 @@ class SecurityDomainController:
             安全域 handle，失败返回 0
         """
         if config is None:
-            config = SecurityDomainConfig()
+            config = SecurityGroupConfig()
 
         # 继承父安全域
         if config.inherit_from_parent and not config.create_new:
@@ -206,7 +206,7 @@ class SecurityDomainController:
             if config.confidential:
                 passphrase_hash = self._compute_passphrase_hash(config.passphrase)
 
-        instance = SecurityDomain(
+        instance = SecurityGroup(
             handle=handle,
             owner_domain_id=owner_domain_id,
             domain_id=domain_id,
@@ -344,7 +344,7 @@ class SecurityDomainController:
         # 需要显式调用 destroy() 销毁
         return True
 
-    def get_instance(self, handle: int) -> Optional[SecurityDomain]:
+    def get_instance(self, handle: int) -> Optional[SecurityGroup]:
         """获取安全域实例"""
         return self.instances.get(handle)
 
@@ -502,7 +502,7 @@ class SecurityDomainController:
         # 简单哈希（用于验证）
         return ((passphrase * 0x5851F42D4C957F2D) ^ self.CONFIDENTIAL_SEED) & 0xFFFFFFFFFFFFFFFF
 
-    def _clear_encrypted_regions(self, instance: SecurityDomain) -> None:
+    def _clear_encrypted_regions(self, instance: SecurityGroup) -> None:
         """清理加密区域"""
         if self.memory_manager:
             self.memory_manager.clear_encryption_by_handle(instance.handle)
