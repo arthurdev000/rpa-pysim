@@ -12,10 +12,10 @@ class TestDomainBlock:
 
     def test_create_block(self):
         block = DomainBlock(
-            exception_vector=0x2000,
+            trap_vector=0x2000,
             ipa_regions=0x10000,
         )
-        assert block.exception_vector == 0x2000
+        assert block.trap_vector == 0x2000
         assert block.ipa_regions == 0x10000
 
 
@@ -137,7 +137,7 @@ class TestSimpleISA:
         # 设置控制块 - 新布局
         # 0x00: ctrlblock_size
         # 0x04: domain_id (系统分配)
-        # 0x08: exception_vector (子域设置)
+        # 0x08: trap_vector (子域设置)
         # 0x0C: interrupt_ctrl (系统分配)
         # 0x10: ipa_regions (父域设置)
         # 0x14: pagetable (子域设置)
@@ -150,14 +150,14 @@ class TestSimpleISA:
         block_addr = 0x0800
         child_entry = 0x2000
         mem.write_word(block_addr + 0x00, 32)               # ctrlblock_size = 32
-        mem.write_word(block_addr + 0x08, 0)                # exception_vector (子域自己用的)
+        mem.write_word(block_addr + 0x08, 0)                # trap_vector (子域自己用的)
         mem.write_word(block_addr + 0x10, 0)                # ipa_regions
         mem.write_word(block_addr + SAVED_LR_OFFSET, child_entry)      # saved_lr = 入口地址 (父域设置)
 
         rpa = RPALogic()
         rpa.memory = mem
-        # 设置父域（根域）的 exception_vector
-        rpa.root_domain.block.exception_vector = 0x3000
+        # 设置父域（根域）的 trap_vector
+        rpa.root_domain.block.trap_vector = 0x3000
 
         core = SimpleISA(rpa=rpa, memory=mem)
 
@@ -187,7 +187,7 @@ class TestSimpleISA:
         core.state.pc = 0x1000
         core.run()
 
-        # 验证：ESCALATE 跳转到父域的 exception_vector，执行了 MOV R3, #99
+        # 验证：ESCALATE 跳转到父域的 trap_vector，执行了 MOV R3, #99
         assert core.state.get_reg(3) == 99  # 异常处理程序执行了
         # 子域执行了 MOV R1, #5（但寄存器状态在域切换时保存了）
         # R1 的值在子域上下文中，当前是父域的寄存器状态
@@ -324,14 +324,14 @@ class TestIntegration:
         rpa.memory = mem
 
         block = DomainBlock(
-            exception_vector=0x4004,
+            trap_vector=0x4004,
             ipa_regions=0x50000,
         )
 
         rpa._write_domain_block(0x1000, block)
         read_block = rpa._read_domain_block(0x1000)
 
-        assert read_block.exception_vector == 0x4004
+        assert read_block.trap_vector == 0x4004
         assert read_block.ipa_regions == 0x50000
 
     def test_descend_escalate_return_cycle(self):
@@ -347,12 +347,12 @@ class TestIntegration:
         child_return_point = 0x2008  # After ESCALATE instruction
 
         mem.write_word(block_addr + 0x00, 32)                    # ctrlblock_size
-        mem.write_word(block_addr + 0x08, 0)                     # exception_vector (子域自己的)
+        mem.write_word(block_addr + 0x08, 0)                     # trap_vector (子域自己的)
         mem.write_word(block_addr + 0x10, 0)                     # ipa_regions
         mem.write_word(block_addr + SAVED_LR_OFFSET, child_entry)           # saved_lr = 入口地址 (父域设置)
 
-        # 设置父域的 exception_vector
-        rpa.root_domain.block.exception_vector = parent_exception_handler
+        # 设置父域的 trap_vector
+        rpa.root_domain.block.trap_vector = parent_exception_handler
 
         core = SimpleISA(rpa=rpa, memory=mem)
 
@@ -414,12 +414,12 @@ class TestExitInstruction:
         block_addr = 0x0800
         child_entry = 0x2000
         mem.write_word(block_addr + 0x00, 32)               # ctrlblock_size
-        mem.write_word(block_addr + 0x08, 0)                # exception_vector
+        mem.write_word(block_addr + 0x08, 0)                # trap_vector
         mem.write_word(block_addr + 0x10, 0)                # ipa_regions
         mem.write_word(block_addr + SAVED_LR_OFFSET, child_entry)      # saved_lr
 
         core = SimpleISA(rpa=rpa, memory=mem)
-        rpa.root_domain.block.exception_vector = 0x3000
+        rpa.root_domain.block.trap_vector = 0x3000
 
         # 父域代码
         core.load_assembly("""
@@ -469,11 +469,11 @@ class TestExitInstruction:
         block_addr = 0x0800
         child_entry = 0x2000
         mem.write_word(block_addr + 0x00, 32)               # ctrlblock_size
-        mem.write_word(block_addr + 0x08, 0)                # exception_vector
+        mem.write_word(block_addr + 0x08, 0)                # trap_vector
         mem.write_word(block_addr + 0x10, 0)                # ipa_regions
 
         core = SimpleISA(rpa=rpa, memory=mem)
-        rpa.root_domain.block.exception_vector = 0x3000
+        rpa.root_domain.block.trap_vector = 0x3000
 
         # 父域代码 - 写入 saved_lr (0x2C) 后 DESCEND
         core.load_assembly("""
@@ -532,7 +532,7 @@ class TestExitInstruction:
         rpa1 = RPALogic()
         rpa1.memory = mem
         core1 = SimpleISA(rpa=rpa1, memory=mem)
-        rpa1.root_domain.block.exception_vector = 0x3000
+        rpa1.root_domain.block.trap_vector = 0x3000
 
         core1.load_assembly("""
             MOV R0, #0x0800
@@ -577,7 +577,7 @@ class TestExitInstruction:
         rpa2 = RPALogic()
         rpa2.memory = mem2
         core2 = SimpleISA(rpa=rpa2, memory=mem2)
-        rpa2.root_domain.block.exception_vector = 0x4000
+        rpa2.root_domain.block.trap_vector = 0x4000
 
         core2.load_assembly("""
             MOV R0, #0x1000

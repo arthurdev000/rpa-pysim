@@ -4,15 +4,33 @@ SimpleISA - 简化指令集核心
 这是 RPA 架构的指令执行核心。每个 Domain 可以有不同的 ISA 实现，
 SimpleISA 是一个简化版的类 ARM 指令集，用于演示 RPA 的核心机制。
 
-Domain Control Block (DCB) 内存布局 (32 位实现, 32 字节固定大小):
-==================================================================
+Domain Control Block (DCB) 内存布局 (32 位实现):
+===================================================
+
+DCB 结构为三段式：
+
+    ┌─────────────────────────────────────────────────────────────────┐
+    │ RPA Spec Field (固定 8 words)                                   │
+    │   由 RPA 架构规范定义，跨平台统一                               │
+    ├─────────────────────────────────────────────────────────────────┤
+    │ RPA Impdef Field (可变)                                         │
+    │   大小：ctrlblock_size - 8 words                                │
+    │   内容：trap_delegate、中断控制器状态、平台扩展                 │
+    │   访问：软件用 SYSOP，RTL 直接访问                              │
+    ├─────────────────────────────────────────────────────────────────┤
+    │ ISA Context Field (可变)                                        │
+    │   大小：由 ISA 规范定义                                         │
+    │   内容：通用寄存器、状态寄存器、扩展寄存器                      │
+    └─────────────────────────────────────────────────────────────────┘
+
+RPA Spec Field 字段布局（32 位系统为 32 字节）：
 
     ┌──────────┬────────────────────────────────────────────────────────┐
     │ 偏移     │ 字段                                                   │
     ├──────────┼────────────────────────────────────────────────────────┤
-    │ 0x00     │ ctrlblock_size      控制块大小 (父域设置，只读)         │
+    │ 0x00     │ ctrlblock_size      控制块大小 (单位: word, 父域设置)  │
     │ 0x04     │ domain_id           域ID (系统分配，只读)              │
-    │ 0x08     │ exception_vector    异常向量 (子域设置，ESCALATE跳转)  │
+    │ 0x08     │ trap_vector         Trap 处理入口 (子域设置，ESCALATE) │
     │ 0x0C     │ interrupt_ctrl      中断控制器 handle (系统分配)       │
     │ 0x10     │ ipa_regions         IPA 区域表地址 (父域设置，只读)    │
     │ 0x14     │ pagetable           页表地址 (子域设置，可写)          │
@@ -22,7 +40,7 @@ Domain Control Block (DCB) 内存布局 (32 位实现, 32 字节固定大小):
     │ 字段所有权：父域设置 (0x00, 0x10, 0x18) / 子域设置 (0x08, 0x14)    │
     │            系统分配 (0x04, 0x0C, 0x1C)                             │
     ├──────────┬────────────────────────────────────────────────────────┤
-    │          │ 以下为 SimpleISA 扩展字段 (不属于 DCB 标准)            │
+    │          │ 以下为 SimpleISA 扩展字段 (ISA Context Field)          │
     ├──────────┬────────────────────────────────────────────────────────┤
     │ 0x28     │ saved_sp            ESCALATE 保存的栈指针              │
     │ 0x2C     │ saved_lr            ESCALATE 保存的返回地址            │
@@ -108,6 +126,18 @@ from enum import Enum, auto
 # DomainBlock field offsets (imported from rpa_logic)
 OFFSET_PAGETABLE = 0x18  # 页表地址 (子域设置)
 import re
+
+# Import priority constants
+from .interrupt import (
+    PRIORITY_DATA_ABORT,
+    PRIORITY_INSTRUCTION_ABORT,
+    PRIORITY_INVALID_INSTRUCTION,
+    PRIORITY_ESCALATE,
+    PRIORITY_IRQ,
+    PRIORITY_NORMAL,
+    PriorityController,
+    PendingEvent,
+)
 
 
 # DomainBlock 上下文保存区域偏移 (在 DCB 标准字段之后)
@@ -212,6 +242,8 @@ class CPUState:
     # 中断状态
     irq_disabled: bool = False    # 全局中断禁用（执行中断处理程序时）
     in_interrupt: bool = False    # 是否在中断处理中
+    # 优先级状态
+    current_priority: int = PRIORITY_NORMAL  # 当前优先级
 
     def get_reg(self, idx: int) -> int:
         return self.registers[idx]
@@ -256,6 +288,7 @@ class CPUState:
         self.v = False
         self.irq_disabled = False
         self.in_interrupt = False
+        self.current_priority = PRIORITY_NORMAL
 
 
 class Assembler:
@@ -549,6 +582,13 @@ class SimpleISA:
         self.memory_manager = memory_manager
         self.interrupt_controller = interrupt_controller
         self.security_controller = security_controller
+
+        # 优先级控制器
+        self.priority_controller = PriorityController()
+
+        # 将优先级控制器关联到中断控制器
+        if self.interrupt_controller:
+            self.interrupt_controller.set_priority_controller(self.priority_controller)
 
         # 当前 Domain 的页表翻译链
         # [domain_n.pagetable, ..., domain_0.pagetable]
@@ -1139,7 +1179,7 @@ class SimpleISA:
             self.state.set_reg(rd, handle)
 
     def _check_interrupt(self) -> None:
-        """检查并处理中断"""
+        """检查并处理中断（带优先级）"""
         if not self.interrupt_controller:
             return
 
@@ -1147,28 +1187,41 @@ class SimpleISA:
         if self.state.irq_disabled:
             return
 
-        # 检查是否有待处理的中断
+        # 使用优先级感知的中断检查
         current_domain_id = self.rpa.current_domain.domain_id
-        result = self.interrupt_controller.check_interrupt(current_domain_id, {})
+        event = self.interrupt_controller.check_interrupt_with_priority(
+            current_domain_id, {}
+        )
 
-        if result:
-            handle, vector = result
+        if event:
+            # 检查优先级是否允许抢占
+            if not self.priority_controller.can_take(event.priority):
+                return
+
+            # 可以接受该中断
+            handle = event.handle
+            vector = event.vector
+            irq_num = event.irq_num
+
             if vector:
                 # 清除 pending 位（中断被响应）
-                # 找到触发的中断号并清除
-                pending = self.interrupt_controller.get_pending(handle)
-                if pending:
-                    # 清除最低位的 pending（当前处理的中断）
-                    irq_num = (pending & -pending).bit_length() - 1
-                    self.interrupt_controller.clear_pending(handle, irq_num)
+                self.interrupt_controller.clear_pending(handle, irq_num)
+
                 # 保存中断现场
                 self._save_irq_context()
+
+                # 进入中断优先级
+                self.priority_controller.enter(event.priority)
+
                 # 设置 LR 为带标志的返回地址
                 # bx lr 执行时会检测标志并恢复上下文
                 self.state.lr = self.state.pc | IRQ_RETURN_FLAG
+
                 # 标记中断状态
                 self.state.irq_disabled = True
                 self.state.in_interrupt = True
+                self.state.current_priority = event.priority
+
                 # 跳转到中断向量
                 self.state.pc = vector
 
@@ -1220,9 +1273,11 @@ class SimpleISA:
         self.state.c = bool(psr & 0x02)
         self.state.v = bool(psr & 0x01)
 
-        # 清除中断状态
+        # 清除中断状态，恢复优先级
         self.state.irq_disabled = False
         self.state.in_interrupt = False
+        self.state.current_priority = PRIORITY_NORMAL
+        self.priority_controller.exit()
 
     def _execute_descend(self, inst: Instruction) -> None:
         """
@@ -1268,7 +1323,9 @@ class SimpleISA:
         RTL 操作：
         1. 读取 service_type
         2. 调用 ISA.complete_escalate() 保存上下文
-        3. 切换到父域，跳转到 exception_vector
+        3. 切换到父域，跳转到 trap_vector
+
+        ESCALATE 具有高于 IRQ 的优先级。
 
         Args:
             inst: 指令
@@ -1276,6 +1333,10 @@ class SimpleISA:
         """
         service_type = self.state.get_reg(inst.rd)
         block_addr = self.domain_block_addr
+
+        # 进入 ESCALATE 优先级
+        self.priority_controller.enter(PRIORITY_ESCALATE)
+        self.state.current_priority = PRIORITY_ESCALATE
 
         # RTL 调用 ISA 接口保存上下文
         self.complete_escalate(block_addr, service_type)

@@ -7,45 +7,103 @@ RPA Core - Domain management and privilege primitives
 - Domain: 特权域管理
 - DomainBlock: 内存控制块结构
 
-Domain 层级结构:
-=================
+Domain 层级结构与 DCB 关系:
+============================
+
+    ┌──────────────────────────────────────────────────────────────────────────┐
+    │                           RPA Domain 层级                                 │
+    │                                                                          │
+    │   每个 Domain 有一个 DCB (Domain Control Block)，由父域在内存中创建。     │
+    │   DCB 存储域的配置、状态和与子域的连接信息。                              │
+    ├──────────────────────────────────────────────────────────────────────────┤
+    │                                                                          │
+    │  ┌─────────────────────────────────────────────────────────────────┐    │
+    │  │ DCB 0 (根域控制块)              │ Domain 0 (根域)                │    │
+    │  │ ┌─────────────────────────────┐ │  - 特权级: 0                   │    │
+    │  │ │ ctrlblock_size = 8+         │ │  - 拥有物理内存                │    │
+    │  │ │ domain_id     = 0           │ │  - 处理 Domain 1 的 ESCALATE   │    │
+    │  │ │ trap_vector   = handler0    │ │                                │    │
+    │  │ │ ipa_regions   = 物理内存表   │ │  trap_vector → ESCALATE 处理  │    │
+    │  │ │ pagetable     = 根页表      │ │                                │    │
+    │  │ │ child_block   ───────────────────────┐                       │    │
+    │  │ │ security_domain = ...       │ │     │ │                       │    │
+    │  │ └─────────────────────────────┘ │     │ └────────────────────────┘    │
+    │  └─────────────────────────────────│─────│───────────────────────────────┘
+    │                                    │     │    child_block 指向子域 DCB
+    │                                    ▼     │
+    │  ┌─────────────────────────────────────────────────────────────────┐    │
+    │  │ DCB 1 (子域控制块)              │ Domain 1 (子域)                │    │
+    │  │ ┌─────────────────────────────┐ │  - 特权级: 1                   │    │
+    │  │ │ ctrlblock_size = 8+         │ │  - 拥有虚拟内存 (IPA)          │    │
+    │  │ │ domain_id     = 1           │ │  - 处理 Domain 2 的 ESCALATE   │    │
+    │  │ │ trap_vector   = handler1 ◀──│─│─── ESCALATE 跳转目标          │    │
+    │  │ │ ipa_regions   = IPA 约束表   │ │                                │    │
+    │  │ │ pagetable     = 子域页表    │ │  ipa_regions ← 父域设置       │    │
+    │  │ │ child_block   ───────────────────────┐                       │    │
+    │  │ │ security_domain = ...       │ │     │ │                       │    │
+    │  │ └─────────────────────────────┘ │     │ └────────────────────────┘    │
+    │  └─────────────────────────────────│─────│───────────────────────────────┘
+    │                                    │     │
+    │                                    ▼     │
+    │  ┌─────────────────────────────────────────────────────────────────┐    │
+    │  │ DCB 2 (孙域控制块)              │ Domain 2 (孙域)                │    │
+    │  │ ┌─────────────────────────────┐ │  - 特权级: 2                   │    │
+    │  │ │ ctrlblock_size = 8+         │ │  - 最受限的地址空间            │    │
+    │  │ │ domain_id     = 2           │ │                                │    │
+    │  │ │ trap_vector   = 0 ──────────│─│─── 0 表示 Trap 传播到父域      │    │
+    │  │ │ ipa_regions   = IPA 约束表   │ │                                │    │
+    │  │ │ pagetable     = 孙域页表    │ │  trap_vector=0 → 父域处理     │    │
+    │  │ │ child_block   = 0           │ │  (无子域)                       │    │
+    │  │ │ security_domain = ...       │ │                                │    │
+    │  │ └─────────────────────────────┘ │                                │    │
+    │  └─────────────────────────────────┴────────────────────────────────┘    │
+    │                                                                          │
+    ├──────────────────────────────────────────────────────────────────────────┤
+    │  指令流程:                                                               │
+    │                                                                          │
+    │  DESCEND: 父域 → 子域                                                    │
+    │    - 父域准备 DCB，设置 ipa_regions, ctrlblock_size                     │
+    │    - 父域写入入口地址到 saved_lr (ISA Context 字段)                      │
+    │    - 硬件切换 current_domain，PC ← saved_lr                              │
+    │                                                                          │
+    │  ESCALATE: 子域 → 父域 (请求服务)                                        │
+    │    - 子域调用 ESCALATE，ISA 保存 SP/LR/PSR 到 DCB                        │
+    │    - 硬件切换到父域，PC ← 父域的 trap_vector                             │
+    │    - 若 trap_vector=0，继续传播到更上层                                  │
+    │                                                                          │
+    │  RETURN: 父域 → 子域 (服务完成)                                          │
+    │    - 父域调用 RETURN，从 child_block 定位子域 DCB                        │
+    │    - 硬件切换到子域，恢复 SP/LR/PSR                                      │
+    │                                                                          │
+    └──────────────────────────────────────────────────────────────────────────┘
+
+DCB 三段式布局:
+===============
 
     ┌─────────────────────────────────────────────────────────────────┐
-    │                        RPA Domain 层级                          │
+    │ RPA Spec Field (固定 8 words)                                   │
+    │   由 RPA 架构规范定义，跨平台统一                               │
+    │   偏移 0x00 - 0x1C                                              │
     ├─────────────────────────────────────────────────────────────────┤
-    │                                                                 │
-    │    ┌──────────────────┐                                         │
-    │    │   Domain 0       │  ← 根域 (root_domain)                   │
-    │    │   特权级: 0      │    - 拥有物理内存                       │
-    │    │                  │    - 可创建子域                         │
-    │    │  ┌────────────┐  │    - 处理子域的 ESCALATE               │
-    │    │  │ Domain 1   │  │                                         │
-    │    │  │ 特权级: 1  │  │  ← 子域                                 │
-    │    │  │            │  │    - 拥有虚拟内存                       │
-    │    │  │ ┌────────┐ │  │    - 可创建孙域                         │
-    │    │  │ │Domain 2│ │  │    - 处理孙域的 ESCALATE               │
-    │    │  │ │特权级:2│ │  │                                         │
-    │    │  │ └────────┘ │  │  ← 孙域                                 │
-    │    │  └────────────┘  │                                         │
-    │    └──────────────────┘                                         │
-    │                                                                 │
-    │    DESCEND: Domain N → Domain N+1 (向下进入子域)                │
-    │    ESCALATE: Domain N → Domain N-1 (向上请求服务)               │
-    │                                                                 │
+    │ RPA Impdef Field (可变)                                         │
+    │   大小：ctrlblock_size - 8 words                                │
+    │   内容：平台特定扩展字段                                        │
+    │   访问：软件用 SYSOP，RTL 直接访问                              │
+    ├─────────────────────────────────────────────────────────────────┤
+    │ ISA Context Field (可变)                                        │
+    │   大小：由 ISA 规范定义                                         │
+    │   内容：saved_sp, saved_lr, saved_psr, 中断现场等               │
     └─────────────────────────────────────────────────────────────────┘
 
-DomainBlock (控制块) - 32 字节:
-================================
-
-DCB 是硬件管理域状态的核心存储空间。字段按子系统组织。
+RPA Spec Field 字段布局（32 位系统为 32 字节）：
 
     ┌──────────┬────────────────────────────────────────────────────────┐
     │ 偏移     │ 字段                                                   │
     ├──────────┼────────────────────────────────────────────────────────┤
-    │ 0x00     │ ctrlblock_size      控制块大小 (父域设置)              │
+    │ 0x00     │ ctrlblock_size      控制块大小 (单位: word, 父域设置)  │
     │ 0x04     │ domain_id           域ID (系统分配，用于 DMA 访问控制) │
     ├──────────┼────────────────────────────────────────────────────────┤
-    │ 0x08     │ exception_vector    异常向量 (子域设置，0=传播到父域)  │
+    │ 0x08     │ trap_vector         Trap 处理入口 (子域设置，0=传播)   │
     ├──────────┼────────────────────────────────────────────────────────┤
     │ 0x0C     │ interrupt_ctrl      中断控制器 handle (系统分配)       │
     ├──────────┼────────────────────────────────────────────────────────┤
@@ -59,21 +117,24 @@ DCB 是硬件管理域状态的核心存储空间。字段按子系统组织。
 
 字段设置者：
     父域设置：ctrlblock_size, ipa_regions, child_block
-    子域设置：exception_vector, pagetable
+    子域设置：trap_vector, pagetable
     系统分配：domain_id, interrupt_ctrl, security_domain
 
 字段说明：
     ctrlblock_size:
-        - 必须设置，值不对时 DESCEND 会报错
-        - 必须是 32 字节对齐
+        - 控制块大小，单位为 word
+        - 最小值：8 words（RPA Spec Field）
+        - 对齐：8 words
+        - DESCEND 时硬件验证
 
     domain_id:
         - 系统分配的唯一标识符
         - DMA 访问控制使用此 ID
 
-    exception_vector:
-        - 子域设置的异常处理入口
-        - 为 0 时异常传播到父域
+    trap_vector:
+        - 子域设置的 Trap 处理入口
+        - 为 0 时 Trap 传播到父域
+        - 用于 ESCALATE、FAULT 等同步事件
 
     interrupt_ctrl:
         - 中断控制器实例 handle
@@ -101,38 +162,42 @@ DCB 是硬件管理域状态的核心存储空间。字段按子系统组织。
 DESCEND 流程:
 =============
 
-    父域执行 DESCEND R0 (R0 = 控制块地址):
+    父域执行 DESCEND R0 (R0 = 子域控制块地址):
 
     准备工作（父域负责）：
     1. 父域在控制块中设置必要字段
-    2. 对于首次 DESCEND，父域必须将入口地址写入 saved_lr (0x24)
+    2. 对于首次 DESCEND，父域必须将入口地址写入 saved_lr (0x28)
 
-    ┌─────────────────────────────────────────────────────────────────┐
-    │ RPALogic pseudo-RTL          │ Decoder (SimpleISA)             │
-    ├──────────────────────────────┼──────────────────────────────────┤
-    │                              │                                 │
-    │ 1. 读取控制块:               │                                 │
-    │    size = [R0 + 0x00]        │                                 │
-    │    验证 size 对齐和范围      │                                 │
-    │    exception = [R0 + 0x04]   │                                 │
-    │    memtable = [R0 + 0x10]    │                                 │
-    │                              │                                 │
-    │ 2. 分配 domain_id:           │                                 │
-    │    domain_id = next_id++     │                                 │
-    │    [R0 + 0x14] = domain_id   │                                 │
-    │                              │                                 │
-    │ 3. 设置 parent_block:        │                                 │
-    │    [R0 + 0x18] = parent_addr │                                 │
-    │                              │                                 │
-    │ 4. 切换到子域:               │                                 │
-    │    current_domain = child    │                                 │
-    │    PC = saved_lr ─────────────▶ Decoder 开始执行               │
-    │                              │                                 │
-    │                              │ 5. Decoder 执行代码             │
-    │                              │    ...                          │
-    │                              │    ESCALATE R0                  │
-    │                              │                                 │
-    └──────────────────────────────┴──────────────────────────────────┘
+    ┌──────────────────────────────────────────────────────────────────────────┐
+    │                        DESCEND 执行流程                                  │
+    ├──────────────────────────────────────────────────────────────────────────┤
+    │                                                                          │
+    │  父域 DCB (在父域地址空间)           子域 DCB (R0 指向，在父域地址空间)  │
+    │  ┌─────────────────────┐            ┌─────────────────────┐             │
+    │  │ child_block ────────│───────────▶│ 0x00 ctrlblock_size │← 父域设置   │
+    │  │ ...                 │            │ 0x04 domain_id      │← 系统分配   │
+    │  │ trap_vector = hdlr  │            │ 0x08 trap_vector    │← 子域设置   │
+    │  │ ...                 │            │ 0x10 ipa_regions    │← 父域设置   │
+    │  └─────────────────────┘            │ 0x14 pagetable      │← 子域设置   │
+    │                                      │ 0x18 child_block    │← 父域维护   │
+    │                                      │ 0x28 saved_lr       │← 入口地址   │
+    │                                      └─────────────────────┘             │
+    │                                                                          │
+    │  RPALogic pseudo-RTL:                                                    │
+    │  ────────────────────                                                    │
+    │  1. 读取 DCB 验证：size = [R0+0x00], 检查对齐和范围                     │
+    │  2. 分配 domain_id: [R0+0x04] = next_id++                               │
+    │  3. 记录父子关系: 父域.child_block = R0                                 │
+    │  4. 切换到子域: current_domain = child                                  │
+    │  5. 跳转执行: PC = [R0+0x28] (saved_lr)                                 │
+    │                                                                          │
+    │  Decoder (SimpleISA):                                                    │
+    │  ────────────────────                                                    │
+    │  6. 从 saved_lr 开始执行子域代码                                        │
+    │     ... 子域运行 ...                                                    │
+    │     ESCALATE R0  ← 子域请求父域服务                                     │
+    │                                                                          │
+    └──────────────────────────────────────────────────────────────────────────┘
 
     注意：首次和后续 DESCEND 统一使用 saved_lr 作为入口点
     - 首次：父域在 DESCEND 前写入入口地址到 saved_lr
@@ -143,46 +208,84 @@ ESCALATE 流程:
 
     子域执行 ESCALATE R0 (R0 = 服务类型):
 
-    ┌─────────────────────────────────────────────────────────────────┐
-    │ RPALogic pseudo-RTL          │ Decoder (SimpleISA)             │
-    ├──────────────────────────────┼──────────────────────────────────┤
-    │                              │                                 │
-    │                              │ 1. Decoder 保存上下文           │
-    │                              │    [block+0x20] = SP            │
-    │                              │    [block+0x24] = PC+4 (返回)   │
-    │                              │    [block+0x28] = PSR           │
-    │                              │                                 │
-    │ 2. 切换到父域:               │                                 │
-    │    current_domain = parent   │                                 │
-    │    PC = parent.exception_vec ─▶ Decoder 跳转到处理程序         │
-    │                              │                                 │
-    │                              │ 3. Decoder 处理请求             │
-    │                              │    读取状态、执行服务           │
-    │                              │                                 │
-    │                              │ 4. RETURN 返回                  │
-    │                              │                                 │
-    └──────────────────────────────┴──────────────────────────────────┘
+    ┌──────────────────────────────────────────────────────────────────────────┐
+    │                        ESCALATE 执行流程                                 │
+    ├──────────────────────────────────────────────────────────────────────────┤
+    │                                                                          │
+    │  子域 DCB                              父域 DCB                          │
+    │  ┌─────────────────────┐             ┌─────────────────────┐            │
+    │  │ 0x08 trap_vector = 0│──┐          │ 0x08 trap_vector    │            │
+    │  │ ...                 │  │          │ ...                 │            │
+    │  │ 0x28 saved_sp ◀─────│──│──┐       │ 0x18 child_block ───│──┐         │
+    │  │ 0x2C saved_lr ◀─────│──│──│──┐    └─────────────────────┘  │         │
+    │  │ 0x30 saved_psr ◀────│──│──│──│──┐                          │         │
+    │  └─────────────────────┘  │  │  │  │                          │         │
+    │                           │  │  │  │                          ▼         │
+    │   保存上下文到子域 DCB ◀──┘  │  │  │             指向子域 DCB ─┘         │
+    │                              │  │  │                                     │
+    │   trap_vector = 0? ──────────┘  │  │                                     │
+    │     是 → 传播到祖父域            │  │                                     │
+    │     否 → 跳转到父域处理 ─────────┘  │                                     │
+    │                                    ▼                                     │
+    │                           PC ← trap_vector                               │
+    │                                                                          │
+    │  RPALogic pseudo-RTL:                                                    │
+    │  ────────────────────                                                    │
+    │  1. 保存子域上下文: [DCB+0x28]=SP, [DCB+0x2C]=PC+4, [DCB+0x30]=PSR      │
+    │  2. 切换到父域: current_domain = parent                                  │
+    │  3. 检查父域 trap_vector:                                                │
+    │     - 若 = 0: 继续传播到祖父域（递归）                                   │
+    │     - 若 ≠ 0: PC = trap_vector                                          │
+    │                                                                          │
+    │  Decoder (SimpleISA):                                                    │
+    │  ────────────────────                                                    │
+    │  4. 跳转到 trap_vector 处理程序                                         │
+    │     ... 处理服务请求 ...                                                 │
+    │     RETURN  ← 返回子域                                                   │
+    │                                                                          │
+    └──────────────────────────────────────────────────────────────────────────┘
 
-异常传播:
-=========
+Trap 传播机制:
+==============
 
-    子域触发异常:
+    子域触发 Trap (异常、ESCALATE 等):
 
-    ┌─────────────────────────────────────────────────────────────────┐
-    │ RPALogic pseudo-RTL          │ Decoder (SimpleISA)             │
-    ├──────────────────────────────┼──────────────────────────────────┤
-    │                              │                                 │
-    │                              │ 1. Decoder 检测到异常           │
-    │                              │    (缺页、非法指令等)           │
-    │                              │                                 │
-    │ 2. 检查 exception_vector     │                                 │
-    │    if (== 0) → 传播到父域    │                                 │
-    │    else → 跳转处理           │                                 │
-    │                              │                                 │
-    │ 3. 切换到父域                │                                 │
-    │    ───────────────────────────▶ 4. Decoder 异常处理            │
-    │                              │                                 │
-    └──────────────────────────────┴──────────────────────────────────┘
+    ┌──────────────────────────────────────────────────────────────────────────┐
+    │                        Trap 传播决策树                                   │
+    ├──────────────────────────────────────────────────────────────────────────┤
+    │                                                                          │
+    │  子域发生 Trap                                                           │
+    │       │                                                                  │
+    │       ▼                                                                  │
+    │  ┌─────────────────┐                                                    │
+    │  │ 检查 trap_vector │                                                    │
+    │  │ [DCB + 0x08]    │                                                    │
+    │  └────────┬────────┘                                                    │
+    │           │                                                              │
+    │     ┌─────┴─────┐                                                       │
+    │     ▼           ▼                                                       │
+    │  = 0          ≠ 0                                                       │
+    │     │           │                                                       │
+    │     ▼           ▼                                                       │
+    │ ┌───────────┐ ┌──────────────────┐                                     │
+    │ │传播到父域 │ │跳转到 trap_vector│                                     │
+    │ │(递归检查) │ │[DCB+0x08] → PC  │                                     │
+    │ └───────────┘ └──────────────────┘                                     │
+    │     │                                                                   │
+    │     ▼                                                                   │
+    │  父域 trap_vector = 0?                                                  │
+    │     │                                                                   │
+    │    ... 继续传播 ...                                                     │
+    │     │                                                                   │
+    │     ▼                                                                   │
+    │  根域处理 (必须处理所有 Trap)                                           │
+    │                                                                          │
+    │  说明:                                                                   │
+    │  - trap_vector = 0 表示子域不处理此 Trap，委托给父域                    │
+    │  - 根域的 trap_vector 不能为 0，作为最终处理者                          │
+    │  - ESCALATE 也遵循此机制，但 R0 传递服务类型                            │
+    │                                                                          │
+    └──────────────────────────────────────────────────────────────────────────┘
 """
 
 from dataclasses import dataclass, field
@@ -194,15 +297,23 @@ if TYPE_CHECKING:
 
 
 # DomainBlock 常量
-CTRLBLOCK_SIZE = 32  # 固定大小 32 字节（8 个 4 字节字段）
-CTRLBLOCK_ALIGN = 32  # 对齐要求
-CTRLBLOCK_MIN_SIZE = 32  # 最小有效大小
+# 单位：word（目标平台的原生字长）
+# 32 位系统：word = 4 字节，RPA Spec Field = 32 字节
+CTRLBLOCK_WORDS = 8       # RPA Spec Field 字数（固定）
+CTRLBLOCK_ALIGN_WORDS = 8 # 对齐要求（word 数量）
+CTRLBLOCK_MIN_WORDS = 8   # 最小有效大小（word 数量）
+
+# 字节单位常量（32 位系统，内部实现用）
+WORD_SIZE = 4  # 32 位系统
+CTRLBLOCK_SIZE = CTRLBLOCK_WORDS * WORD_SIZE
+CTRLBLOCK_ALIGN = CTRLBLOCK_ALIGN_WORDS * WORD_SIZE
+CTRLBLOCK_MIN_SIZE = CTRLBLOCK_MIN_WORDS * WORD_SIZE
 
 # DomainBlock 字段偏移（新布局）
 # 偏移  字段              设置者    用途
-# 0x00  ctrlblock_size   父域     控制块大小
+# 0x00  ctrlblock_size   父域     控制块大小（单位：word）
 # 0x04  domain_id        系统     域标识（DMA 访问控制使用此 ID）
-# 0x08  exception_vector 子域     异常向量（0 = 传播到父域）
+# 0x08  trap_vector      子域     Trap 处理入口（0 = 传播到父域）
 # 0x0C  interrupt_ctrl   系统     中断控制器 handle
 # 0x10  ipa_regions      父域     IPA 区域表地址（父域设置，子域只读）
 # 0x14  pagetable        子域     页表地址（子域设置，可写）
@@ -210,7 +321,7 @@ CTRLBLOCK_MIN_SIZE = 32  # 最小有效大小
 # 0x1C  security_domain  系统     安全域 handle
 OFFSET_CTRLBLOCK_SIZE = 0x00
 OFFSET_DOMAIN_ID = 0x04
-OFFSET_EXCEPTION_VECTOR = 0x08
+OFFSET_TRAP_VECTOR = 0x08
 OFFSET_INTERRUPT_CTRL = 0x0C
 OFFSET_IPA_REGIONS = 0x10
 OFFSET_PAGETABLE = 0x14
@@ -238,14 +349,29 @@ class DomainBlock:
 
     父域在内存中分配此结构，然后执行 DESCEND 使配置生效。
 
-    大小: 32 字节（8 个 4 字节字段）
-    对齐: 32 字节边界
+    结构布局（三段式）：
+    ┌─────────────────────────────────────────────────────────────┐
+    │ RPA Spec Field (固定 8 words)                              │
+    │   由 RPA 架构规范定义，跨平台统一                           │
+    │   字段：ctrlblock_size, domain_id, trap_vector,            │
+    │         interrupt_ctrl, ipa_regions, pagetable,            │
+    │         child_block, security_domain                       │
+    ├─────────────────────────────────────────────────────────────┤
+    │ RPA Impdef Field (可变)                                    │
+    │   大小：ctrlblock_size - 8 words                           │
+    │   内容：trap_delegate、中断控制器状态、平台扩展             │
+    │   访问：软件用 SYSOP，RTL 直接访问                          │
+    ├─────────────────────────────────────────────────────────────┤
+    │ ISA Context Field (可变)                                   │
+    │   大小：由 ISA 规范定义                                     │
+    │   内容：通用寄存器、状态寄存器、扩展寄存器                   │
+    └─────────────────────────────────────────────────────────────┘
 
-    字段布局：
+    字段布局（RPA Spec Field）：
     偏移  字段              设置者    用途
-    0x00  ctrlblock_size   父域     控制块大小
+    0x00  ctrlblock_size   父域     控制块大小（单位：word）
     0x04  domain_id        系统     域标识
-    0x08  exception_vector 子域     异常向量（0 = 传播到父域）
+    0x08  trap_vector      子域     Trap 处理入口（0 = 传播到父域）
     0x0C  interrupt_ctrl   系统     中断控制器 handle
     0x10  ipa_regions      父域     IPA 区域表地址（只读）
     0x14  pagetable        子域     页表地址（可写）
@@ -255,9 +381,9 @@ class DomainBlock:
     见文件头部 ASCII 图解
     """
     # 基本字段
-    ctrlblock_size: int = CTRLBLOCK_SIZE   # 0x00: 控制块大小（父域设置）
+    ctrlblock_size: int = CTRLBLOCK_WORDS  # 0x00: 控制块大小（单位：word，默认 8）
     domain_id: int = 0                      # 0x04: 域ID（系统分配，DMA 访问控制使用此 ID）
-    exception_vector: int = 0               # 0x08: 异常向量（子域设置，0 = 传播到父域）
+    trap_vector: int = 0                    # 0x08: Trap 处理入口（子域设置，0 = 传播到父域）
     interrupt_ctrl: int = 0                 # 0x0C: 中断控制器 handle（系统分配）
     ipa_regions: int = 0                    # 0x10: IPA 区域表地址（父域设置，子域只读）
     pagetable: int = 0                      # 0x14: 页表地址（子域设置，可写）
@@ -320,8 +446,8 @@ class RPALogic:
 
         # 根域 (domain_id = 0)
         root_block = DomainBlock(
-            ctrlblock_size=CTRLBLOCK_SIZE,
-            exception_vector=0x8004,
+            ctrlblock_size=CTRLBLOCK_WORDS,
+            trap_vector=0x8004,
             domain_id=0,
         )
         self.root_domain: Domain = Domain(domain_id=0, block=root_block)
@@ -357,28 +483,28 @@ class RPALogic:
             self.root_domain.block.security_domain = controller.root_handle
 
     def _validate_ctrlblock(self, addr: int) -> None:
-        """验证控制块大小和对齐"""
+        """验证控制块大小和对齐
+
+        ctrlblock_size 单位为 word：
+        - 最小值：8 words（RPA Spec Field）
+        - 对齐：8 words（目标平台）
+        """
         if self.memory is None:
             raise RuntimeError("Memory not set")
 
-        # 检查对齐
+        # 检查地址对齐（8 words = 32 字节在 32 位系统）
         if addr % CTRLBLOCK_ALIGN != 0:
             raise DomainBlockError(
-                f"DomainBlock at 0x{addr:x} not aligned to {CTRLBLOCK_ALIGN} bytes"
+                f"DomainBlock at 0x{addr:x} not aligned to {CTRLBLOCK_ALIGN_WORDS} words"
             )
 
-        # 读取大小字段
-        size = self.memory.read_word(addr + 0x00)
+        # 读取大小字段（单位：word）
+        size_words = self.memory.read_word(addr + 0x00)
 
-        # 检查大小有效性
-        if size < CTRLBLOCK_MIN_SIZE:
+        # 检查大小有效性（最小 8 words）
+        if size_words < CTRLBLOCK_MIN_WORDS:
             raise DomainBlockError(
-                f"DomainBlock size {size} too small (minimum {CTRLBLOCK_MIN_SIZE})"
-            )
-
-        if size % CTRLBLOCK_ALIGN != 0:
-            raise DomainBlockError(
-                f"DomainBlock size {size} not aligned to {CTRLBLOCK_ALIGN} bytes"
+                f"DomainBlock size {size_words} words too small (minimum {CTRLBLOCK_MIN_WORDS} words)"
             )
 
     def descend(self, block_addr: int, domain_id: Optional[int] = None) -> Any:
@@ -518,7 +644,7 @@ class RPALogic:
 
         RPALogic pseudo-RTL 层只负责:
         1. 切换到父域
-        2. 返回 exception_vector
+        2. 返回 trap_vector
 
         寄存器保存由 ISA 负责（complete_escalate）
 
@@ -559,7 +685,7 @@ class RPALogic:
         self.current_domain = parent
 
         return {
-            "vector": parent.block.exception_vector,
+            "vector": parent.block.trap_vector,
             "domain_id": parent.domain_id,
             "child_block_addr": 0 if release else child_block_addr,
             "released": release,
@@ -575,7 +701,7 @@ class RPALogic:
 
         self.stats["fault_count"] += 1
 
-        if self.current_domain.block.exception_vector != 0:
+        if self.current_domain.block.trap_vector != 0:
             self._handle_fault(fault_info)
         else:
             self._propagate_fault(fault_info)
@@ -599,7 +725,7 @@ class RPALogic:
             return DomainBlock(
                 ctrlblock_size=self.memory.read_word(addr + OFFSET_CTRLBLOCK_SIZE),
                 domain_id=self.memory.read_word(addr + OFFSET_DOMAIN_ID),
-                exception_vector=self.memory.read_word(addr + OFFSET_EXCEPTION_VECTOR),
+                trap_vector=self.memory.read_word(addr + OFFSET_TRAP_VECTOR),
                 interrupt_ctrl=self.memory.read_word(addr + OFFSET_INTERRUPT_CTRL),
                 ipa_regions=self.memory.read_word(addr + OFFSET_IPA_REGIONS),
                 pagetable=self.memory.read_word(addr + OFFSET_PAGETABLE),
@@ -613,7 +739,7 @@ class RPALogic:
         if self.memory:
             self.memory.write_word(addr + OFFSET_CTRLBLOCK_SIZE, block.ctrlblock_size)
             self.memory.write_word(addr + OFFSET_DOMAIN_ID, block.domain_id)
-            self.memory.write_word(addr + OFFSET_EXCEPTION_VECTOR, block.exception_vector)
+            self.memory.write_word(addr + OFFSET_TRAP_VECTOR, block.trap_vector)
             self.memory.write_word(addr + OFFSET_INTERRUPT_CTRL, block.interrupt_ctrl)
             self.memory.write_word(addr + OFFSET_IPA_REGIONS, block.ipa_regions)
             self.memory.write_word(addr + OFFSET_PAGETABLE, block.pagetable)
@@ -639,8 +765,8 @@ class RPALogic:
         if self.current_domain.parent is None:
             raise RuntimeError(f"Unhandled fault at root: {fault_info}")
 
-        # escalate() 会切换到父域并返回 exception_vector
-        # 由 Decoder 负责跳转到 exception_vector 执行处理程序
+        # escalate() 会切换到父域并返回 trap_vector
+        # 由 Decoder 负责跳转到 trap_vector 执行处理程序
         self.escalate(0x01)  # FAULT 类型
 
     def _fault_type_to_code(self, fault_type: str) -> int:
