@@ -112,7 +112,7 @@ RPA Spec Field 字段布局（32 位系统为 32 字节）：
     ├──────────┼────────────────────────────────────────────────────────┤
     │ 0x18     │ child_block         子域控制块地址 (父域维护)          │
     ├──────────┼────────────────────────────────────────────────────────┤
-    │ 0x1C     │ security_group     安全域 handle (系统分配)           │
+    │ 0x1C     │ security_group     安全组 handle (系统分配)           │
     └──────────┴────────────────────────────────────────────────────────┘
 
 字段设置者：
@@ -156,8 +156,8 @@ RPA Spec Field 字段布局（32 位系统为 32 字节）：
         - 用于 RETURN 指令返回子域
 
     security_group:
-        - 安全域 handle，用于内存隔离和加密
-        - 系统分配，绑定域到安全域
+        - 安全组 handle，用于内存隔离和加密
+        - 系统分配，绑定域到安全组
 
 DESCEND 流程:
 =============
@@ -318,7 +318,7 @@ CTRLBLOCK_MIN_SIZE = CTRLBLOCK_MIN_WORDS * WORD_SIZE
 # 0x10  ipa_regions      父域     IPA 区域表地址（父域设置，子域只读）
 # 0x14  pagetable        子域     页表地址（子域设置，可写）
 # 0x18  child_block      父域     子域控制块地址（父域维护）
-# 0x1C  security_group  系统     安全域 handle
+# 0x1C  security_group  系统     安全组 handle
 OFFSET_CTRLBLOCK_SIZE = 0x00
 OFFSET_DOMAIN_ID = 0x04
 OFFSET_TRAP_VECTOR = 0x08
@@ -376,7 +376,7 @@ class DomainBlock:
     0x10  ipa_regions      父域     IPA 区域表地址（只读）
     0x14  pagetable        子域     页表地址（可写）
     0x18  child_block      父域     子域控制块地址
-    0x1C  security_group  系统     安全域 handle
+    0x1C  security_group  系统     安全组 handle
 
     见文件头部 ASCII 图解
     """
@@ -388,7 +388,7 @@ class DomainBlock:
     ipa_regions: int = 0                    # 0x10: IPA 区域表地址（父域设置，子域只读）
     pagetable: int = 0                      # 0x14: 页表地址（子域设置，可写）
     child_block: int = 0                    # 0x18: 子域控制块地址（父域维护）
-    security_group: int = 0                # 0x1C: 安全域 handle（系统分配）
+    security_group: int = 0                # 0x1C: 安全组 handle（系统分配）
 
     # 向后兼容字段（不存储在内存中）
     params: Dict[str, Any] = field(default_factory=dict)
@@ -441,7 +441,7 @@ class RPALogic:
         # 域ID分配器
         self._next_domain_id = 1
 
-        # 安全域控制器引用
+        # 安全组控制器引用
         self.security_controller: Optional['SecurityGroupController'] = None
 
         # 根域 (domain_id = 0)
@@ -476,9 +476,9 @@ class RPALogic:
         }
 
     def set_security_controller(self, controller: 'SecurityGroupController') -> None:
-        """设置安全域控制器"""
+        """设置安全组控制器"""
         self.security_controller = controller
-        # 设置 root 域的安全域
+        # 设置 root 域的安全组
         if controller:
             self.root_domain.block.security_group = controller.root_handle
 
@@ -577,20 +577,20 @@ class RPALogic:
         # 首次 DESCEND：创建新域
         block = self._read_domain_block(block_addr)
 
-        # 读取安全域配置
+        # 读取安全组配置
         sec_domain_handle = block.security_group
 
         # 分配 domain_id
-        # 如果有安全域控制器，可以从安全子系统分配
+        # 如果有安全组控制器，可以从安全子系统分配
         if self.security_controller and self.security_controller.enabled:
-            # 从安全域获取 domain_id
+            # 从安全组获取 domain_id
             if sec_domain_handle == 0:
-                # 继承父域的安全域
+                # 继承父域的安全组
                 sec_domain_handle = self.current_domain.block.security_group
-                # 如果父域也没有安全域，使用 root_handle
+                # 如果父域也没有安全组，使用 root_handle
                 if sec_domain_handle == 0:
                     sec_domain_handle = self.security_controller.root_handle
-            # 绑定域到安全域
+            # 绑定域到安全组
             if sec_domain_handle:
                 self.security_controller.bind_domain(sec_domain_handle, domain_id if domain_id else self._next_domain_id)
 
@@ -611,7 +611,7 @@ class RPALogic:
             self.memory.write_word(block_addr + OFFSET_SECURITY_GROUP, sec_domain_handle)
             self.memory.write_word(self.current_domain.block_addr + OFFSET_CHILD_BLOCK, block_addr)
 
-        # 绑定到安全域
+        # 绑定到安全组
         if self.security_controller and sec_domain_handle:
             self.security_controller.bind_domain(sec_domain_handle, domain_id)
 
@@ -673,7 +673,7 @@ class RPALogic:
                 self.memory.write_word(parent.block_addr + OFFSET_CHILD_BLOCK, 0)
                 self.memory.write_word(child_block_addr + OFFSET_DOMAIN_ID, 0)
 
-            # 解绑安全域
+            # 解绑安全组
             if self.security_controller and child_sec_domain:
                 self.security_controller.unbind_domain(child_sec_domain, child_domain_id)
 
