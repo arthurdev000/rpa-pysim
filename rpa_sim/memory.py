@@ -76,7 +76,7 @@ class EncryptedRegion:
     """加密内存区域"""
     start: int              # 起始地址
     size: int               # 大小
-    security_handle: int    # 所属安全域 handle
+    security_handle: int    # 所属安全组 handle
     key: int                # 加密密钥
 
     def encrypt(self, data: bytes) -> bytes:
@@ -240,7 +240,7 @@ class Memory:
         Args:
             start: 起始地址
             size: 区域大小
-            security_handle: 安全域 handle
+            security_handle: 安全组 handle
             key: 加密密钥
         """
         region = EncryptedRegion(
@@ -268,10 +268,10 @@ class Memory:
 
     def clear_encryption_by_handle(self, security_handle: int) -> int:
         """
-        清除指定安全域的所有加密区域。
+        清除指定安全组的所有加密区域。
 
         Args:
-            security_handle: 安全域 handle
+            security_handle: 安全组 handle
 
         Returns:
             清除的区域数量
@@ -526,14 +526,14 @@ class MemoryManager:
         # pagetable_addr -> PageTable
         self.page_tables: Dict[int, PageTable] = {}
 
-        # 安全域控制器引用
+        # 安全组控制器引用
         self.security_controller: Optional['SecurityGroupController'] = None
 
-        # 页表到安全域的映射: pagetable_addr -> security_handle
+        # 页表到安全组的映射: pagetable_addr -> security_handle
         self.page_table_security: Dict[int, int] = {}
 
     def set_security_controller(self, controller: 'SecurityGroupController') -> None:
-        """设置安全域控制器"""
+        """设置安全组控制器"""
         self.security_controller = controller
         # 同时设置到物理内存
         if controller:
@@ -541,11 +541,11 @@ class MemoryManager:
 
     def bind_page_table_to_security(self, pagetable_addr: int, security_handle: int) -> None:
         """
-        将页表绑定到安全域。
+        将页表绑定到安全组。
 
         Args:
             pagetable_addr: 页表基址
-            security_handle: 安全域 handle
+            security_handle: 安全组 handle
         """
         self.page_table_security[pagetable_addr] = security_handle
 
@@ -556,17 +556,17 @@ class MemoryManager:
         Args:
             start: 起始地址
             size: 区域大小
-            security_handle: 安全域 handle
+            security_handle: 安全组 handle
             key: 加密密钥
         """
         self.physical_memory.set_encryption(start, size, security_handle, key)
 
     def clear_encryption_by_handle(self, security_handle: int) -> int:
         """
-        清除指定安全域的所有加密区域。
+        清除指定安全组的所有加密区域。
 
         Args:
-            security_handle: 安全域 handle
+            security_handle: 安全组 handle
 
         Returns:
             清除的区域数量

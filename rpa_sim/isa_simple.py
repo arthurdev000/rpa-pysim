@@ -1105,19 +1105,19 @@ class SimpleISA:
 
         elif subop == SECDOMAIN_DESTROY:
             # sysop secgroup, destroy, Rn
+            # 调用者必须是 owner
             handle = self.state.get_reg(rn) if rn else arg1
-            success = self.security_controller.destroy(handle)
+            caller_id = self.rpa.current_domain.domain_id
+            success = self.security_controller.destroy(handle, caller_id)
             self.state.set_reg(rd, 1 if success else 0)
 
         elif subop == SECDOMAIN_FORCE_DESTROY:
             # sysop secgroup, force_destroy, Rn
-            # 仅 root 域可用
+            # 仅 root 域可用（由 destroy_force 验证）
             handle = self.state.get_reg(rn) if rn else arg1
-            if self.rpa.current_domain.domain_id == 0:
-                success = self.security_controller.destroy_force(handle)
-                self.state.set_reg(rd, 1 if success else 0)
-            else:
-                self.state.set_reg(rd, 0)  # 非根域无法强制销毁
+            caller_id = self.rpa.current_domain.domain_id
+            success = self.security_controller.destroy_force(handle, caller_id)
+            self.state.set_reg(rd, 1 if success else 0)
 
         elif subop == SECDOMAIN_BIND:
             # sysop secgroup, bind, Rn, R1
