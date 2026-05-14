@@ -719,6 +719,98 @@ class RPALogic:
         """获取统计信息"""
         return self.stats.copy()
 
+    # ============================================================
+    # Root Layer Interface - Domain Hierarchy Query
+    # ============================================================
+
+    def get_domain_hierarchy(self) -> Dict[int, Dict[str, Any]]:
+        """
+        获取域层次信息（Root Layer 接口）
+
+        安全子系统调用此接口获取权威的域层次信息。
+
+        Returns:
+            Dict mapping domain_id to:
+            - "parent_id": 父域ID (root为None)
+            - "block_addr": DomainBlock地址
+            - "security_group": 绑定的安全组handle
+        """
+        hierarchy = {}
+
+        # 从注册表遍历所有域
+        for block_addr, domain in self._domain_registry.items():
+            parent_id = domain.parent.domain_id if domain.parent else None
+            hierarchy[domain.domain_id] = {
+                "parent_id": parent_id,
+                "block_addr": block_addr,
+                "security_group": domain.block.security_group,
+            }
+
+        return hierarchy
+
+    def verify_parent_child(self, parent_id: int, child_id: int) -> bool:
+        """
+        验证父子关系（Root Layer 接口）
+
+        安全子系统调用此接口验证调用者是否为目标域的父域。
+
+        Args:
+            parent_id: 声称的父域ID
+            child_id: 目标子域ID
+
+        Returns:
+            True 如果 parent_id 是 child_id 的直接父域
+        """
+        # 特殊情况：root可以操作任何域
+        if parent_id == 0:
+            return True
+
+        # 查找子域
+        child_domain = self.get_domain_by_id(child_id)
+        if child_domain is None:
+            return False
+
+        # 验证父域
+        if child_domain.parent is None:
+            # child是root，没有父域
+            return False
+
+        return child_domain.parent.domain_id == parent_id
+
+    def get_domain_by_id(self, domain_id: int) -> Optional[Domain]:
+        """
+        根据ID获取域对象
+
+        Args:
+            domain_id: 域ID
+
+        Returns:
+            Domain对象，如果不存在则返回None
+        """
+        for domain in self._domain_registry.values():
+            if domain.domain_id == domain_id:
+                return domain
+        return None
+
+    def get_domain_path_to_root(self, domain_id: int) -> List[int]:
+        """
+        获取从指定域到root的路径（Root Layer 接口）
+
+        Args:
+            domain_id: 起始域ID
+
+        Returns:
+            域ID列表，从指定域到root [domain_id, parent_id, ..., 0]
+        """
+        path = []
+        domain = self.get_domain_by_id(domain_id)
+
+        while domain is not None:
+            path.append(domain.domain_id)
+            domain = domain.parent
+
+        return path
+
     def _read_domain_block(self, addr: int) -> DomainBlock:
         """从内存读取 DomainBlock"""
         if self.memory:
