@@ -604,7 +604,8 @@ RPA 架构采用"安全子系统作为安全请求第一入口"模式：
 │   └─────────────┘                  └─────────────────┘              │
 │                                                                      │
 │   Root holds: core context, root trust, domain hierarchy             │
-│   Security subsystem can observe chip actions (unlike separated TPM) │
+│   Security subsystem observes chip actions with root layer support   │
+│   (unlike separated TPM which lacks this coordination capability)    │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 

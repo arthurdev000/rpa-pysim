@@ -39,7 +39,7 @@
 
 2. **Centralized Policy**: Security subsystem handles ALL security policy decisions. This avoids policy scatter across layers.
 
-3. **Visibility**: Unlike separated TPM, security subsystem can observe chip actions directly.
+3. **Visibility**: Unlike separated TPM, security subsystem can observe chip actions with root layer coordination.
 
 4. **Process-Level Granularity**: Confidential/security domains are process-level entities, not function-level.
 
