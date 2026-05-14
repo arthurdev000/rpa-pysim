@@ -354,6 +354,88 @@ class SecurityGroupController:
 
         return True
 
+    # ============================================================
+    # Confidential Domain Destruction - Security Subsystem API
+    # ============================================================
+
+    def request_destroy_confidential(
+        self,
+        handle: int,
+        caller_domain_id: int,
+        rpa_logic: Any
+    ) -> tuple:
+        """
+        请求销毁机密域（安全子系统入口点）
+
+        流程：
+        1. 安全子系统接收销毁请求
+        2. 从 Root 层获取域层次信息
+        3. 验证调用者是目标域的父域
+        4. 授权则执行销毁
+
+        此方法实现了 RPA 架构中的"安全子系统作为安全请求第一入口"模式：
+        - 避免层层上报的效率问题
+        - 安全子系统可洞察芯片动作
+        - Root 层提供权威的层次信息
+
+        Args:
+            handle: 要销毁的安全组 handle
+            caller_domain_id: 调用者域ID（声称是父域）
+            rpa_logic: RPALogic 实例，用于查询域层次
+
+        Returns:
+            (success, message) 元组
+        """
+        # Step 1: 检查安全组是否存在
+        instance = self.instances.get(handle)
+        if not instance:
+            return (False, f"Security group handle {handle} not found")
+
+        # Step 2: 检查是否为机密域
+        if not instance.is_confidential:
+            return (False, "Target is not a confidential domain, use destroy() instead")
+
+        # Step 3: 从 Root 层获取目标域ID
+        target_domain_id = instance.owner_domain_id
+
+        # Step 4: 通过 Root 层验证父子关系
+        if not rpa_logic.verify_parent_child(caller_domain_id, target_domain_id):
+            # 记录安全事件（模拟）
+            hierarchy = rpa_logic.get_domain_hierarchy()
+            caller_path = rpa_logic.get_domain_path_to_root(caller_domain_id)
+            return (
+                False,
+                f"Authorization denied: domain {caller_domain_id} is not parent of "
+                f"confidential domain {target_domain_id}. "
+                f"Caller path to root: {caller_path}"
+            )
+
+        # Step 5: 授权通过，执行销毁
+        # 清理所有关联的域
+        for domain_id in instance.bound_domains.copy():
+            self.domain_security_map.pop(domain_id, None)
+
+        # 清理加密区域
+        if self.memory_manager and instance.encrypted:
+            self._clear_encrypted_regions(instance)
+
+        # 从映射中移除
+        del self.instances[handle]
+        if target_domain_id in self.domain_id_to_handle:
+            del self.domain_id_to_handle[target_domain_id]
+
+        return (True, f"Confidential domain {target_domain_id} destroyed by parent {caller_domain_id}")
+
+    def is_confidential_handle(self, handle: int) -> bool:
+        """检查安全组是否为机密域"""
+        instance = self.instances.get(handle)
+        return instance.is_confidential if instance else False
+
+    def get_bound_domains(self, handle: int) -> Set[int]:
+        """获取安全组绑定的所有域ID"""
+        instance = self.instances.get(handle)
+        return instance.bound_domains.copy() if instance else set()
+
     def bind_domain(self, handle: int, domain_id: int) -> bool:
         """
         绑定域到安全组

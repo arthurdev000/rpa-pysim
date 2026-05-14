@@ -482,5 +482,245 @@ class TestDomainIDAllocation:
         assert result['domain_id'] == 1
 
 
+class TestConfidentialDomainDestruction:
+    """机密域销毁测试 - 安全子系统入口模式"""
+
+    def test_confidential_destroy_authorized_parent(self):
+        """测试父域授权销毁机密子域"""
+        mem = Memory(1024 * 1024)
+        mem_mgr = MemoryManager(mem)
+        controller = SecurityGroupController(mem_mgr)
+
+        rpa = RPALogic()
+        rpa.memory = mem
+        rpa.set_security_controller(controller)
+
+        # 创建父域安全组 (VM Manager, domain_id=1)
+        parent_config = SecurityGroupConfig(create_new=True, isolated=True)
+        parent_handle = controller.create(owner_domain_id=1, config=parent_config)
+
+        # 创建子域安全组 (Confidential VM, is_confidential=True)
+        child_config = SecurityGroupConfig(
+            create_new=True,
+            isolated=True,
+            confidential=True
+        )
+        child_handle = controller.create(owner_domain_id=2, config=child_config)
+
+        # 绑定域
+        controller.bind_domain(parent_handle, 1)  # 父域绑定
+        controller.bind_domain(child_handle, 2)   # 子域绑定
+
+        # 设置父子关系（通过 DESCEND）
+        parent_block_addr = 0x1000
+        child_block_addr = 0x2000
+
+        # 父域 DCB
+        mem.write_word(parent_block_addr + 0x00, 32)  # ctrlblock_size
+        mem.write_word(parent_block_addr + 0x1C, parent_handle)  # security_group
+
+        # 子域 DCB（父域创建）
+        mem.write_word(child_block_addr + 0x00, 32)  # ctrlblock_size
+        mem.write_word(child_block_addr + 0x1C, child_handle)  # security_group
+        mem.write_word(child_block_addr + 0x08, 0x8004)  # trap_vector
+
+        # DESCEND 创建父子关系
+        rpa.descend(parent_block_addr)  # 创建父域
+        rpa.descend(child_block_addr)   # 创建子域（父域是当前域）
+
+        # 验证父子关系
+        assert rpa.verify_parent_child(1, 2)  # domain 1 是 domain 2 的父域
+
+        # 父域请求销毁机密子域
+        success, message = controller.request_destroy_confidential(
+            handle=child_handle,
+            caller_domain_id=1,
+            rpa_logic=rpa
+        )
+
+        assert success is True
+        assert "destroyed" in message.lower()
+        assert controller.get_instance(child_handle) is None  # 已销毁
+
+    def test_confidential_destroy_unauthorized_domain(self):
+        """测试非父域尝试销毁机密域（应被拒绝）"""
+        mem = Memory(1024 * 1024)
+        mem_mgr = MemoryManager(mem)
+        controller = SecurityGroupController(mem_mgr)
+
+        rpa = RPALogic()
+        rpa.memory = mem
+        rpa.set_security_controller(controller)
+
+        # 创建合法父域 (VM Manager, domain_id=1)
+        parent_config = SecurityGroupConfig(create_new=True, isolated=True)
+        parent_handle = controller.create(owner_domain_id=1, config=parent_config)
+
+        # 创建机密子域 (Confidential VM, domain_id=2)
+        child_config = SecurityGroupConfig(
+            create_new=True,
+            isolated=True,
+            confidential=True
+        )
+        child_handle = controller.create(owner_domain_id=2, config=child_config)
+
+        # 创建恶意域 (Malicious Domain, domain_id=3)
+        malicious_config = SecurityGroupConfig(create_new=True, isolated=True)
+        malicious_handle = controller.create(owner_domain_id=3, config=malicious_config)
+
+        # 绑定域
+        controller.bind_domain(parent_handle, 1)
+        controller.bind_domain(child_handle, 2)
+        controller.bind_domain(malicious_handle, 3)
+
+        # 设置正确的父子关系
+        parent_block_addr = 0x1000
+        child_block_addr = 0x2000
+
+        mem.write_word(parent_block_addr + 0x00, 32)
+        mem.write_word(parent_block_addr + 0x1C, parent_handle)
+
+        mem.write_word(child_block_addr + 0x00, 32)
+        mem.write_word(child_block_addr + 0x1C, child_handle)
+        mem.write_word(child_block_addr + 0x08, 0x8004)
+
+        rpa.descend(parent_block_addr)
+        rpa.descend(child_block_addr)
+
+        # 恶意域尝试销毁机密子域
+        success, message = controller.request_destroy_confidential(
+            handle=child_handle,
+            caller_domain_id=3,  # 恶意域
+            rpa_logic=rpa
+        )
+
+        assert success is False
+        assert "denied" in message.lower()
+        assert controller.get_instance(child_handle) is not None  # 未销毁
+
+    def test_root_can_destroy_any_confidential(self):
+        """测试 Root 可以销毁任何机密域"""
+        mem = Memory(1024 * 1024)
+        mem_mgr = MemoryManager(mem)
+        controller = SecurityGroupController(mem_mgr)
+
+        rpa = RPALogic()
+        rpa.memory = mem
+        rpa.set_security_controller(controller)
+
+        # 创建机密域（不通过 DESCEND，直接创建安全组）
+        child_config = SecurityGroupConfig(
+            create_new=True,
+            isolated=True,
+            confidential=True
+        )
+        child_handle = controller.create(owner_domain_id=2, config=child_config)
+        controller.bind_domain(child_handle, 2)
+
+        # Root (domain_id=0) 请求销毁
+        success, message = controller.request_destroy_confidential(
+            handle=child_handle,
+            caller_domain_id=0,  # Root
+            rpa_logic=rpa
+        )
+
+        assert success is True
+        assert "destroyed" in message.lower()
+
+    def test_non_confidential_rejected(self):
+        """测试非机密域不能使用 request_destroy_confidential"""
+        mem = Memory(1024 * 1024)
+        mem_mgr = MemoryManager(mem)
+        controller = SecurityGroupController(mem_mgr)
+
+        rpa = RPALogic()
+        rpa.memory = mem
+        rpa.set_security_controller(controller)
+
+        # 创建普通安全组（非机密）
+        normal_config = SecurityGroupConfig(
+            create_new=True,
+            isolated=True,
+            confidential=False  # 非机密
+        )
+        normal_handle = controller.create(owner_domain_id=1, config=normal_config)
+
+        # 尝试使用 request_destroy_confidential
+        success, message = controller.request_destroy_confidential(
+            handle=normal_handle,
+            caller_domain_id=0,
+            rpa_logic=rpa
+        )
+
+        assert success is False
+        assert "not a confidential domain" in message.lower()
+
+    def test_hierarchy_query(self):
+        """测试域层次查询接口"""
+        mem = Memory(1024 * 1024)
+        mem_mgr = MemoryManager(mem)
+        controller = SecurityGroupController(mem_mgr)
+
+        rpa = RPALogic()
+        rpa.memory = mem
+        rpa.set_security_controller(controller)
+
+        # 创建三层域结构
+        # Root (id=0) -> Parent (id=1) -> Child (id=2)
+        parent_block_addr = 0x1000
+        child_block_addr = 0x2000
+
+        parent_handle = controller.create(owner_domain_id=1, config=SecurityGroupConfig(create_new=True))
+        child_handle = controller.create(owner_domain_id=2, config=SecurityGroupConfig(create_new=True))
+
+        mem.write_word(parent_block_addr + 0x00, 32)
+        mem.write_word(parent_block_addr + 0x1C, parent_handle)
+
+        mem.write_word(child_block_addr + 0x00, 32)
+        mem.write_word(child_block_addr + 0x1C, child_handle)
+        mem.write_word(child_block_addr + 0x08, 0x8004)
+
+        # 创建层次
+        rpa.descend(parent_block_addr)  # domain 1, parent is root
+        rpa.descend(child_block_addr)   # domain 2, parent is domain 1
+
+        # 查询层次
+        hierarchy = rpa.get_domain_hierarchy()
+        assert 0 in hierarchy  # root
+        assert 1 in hierarchy  # parent
+        assert 2 in hierarchy  # child
+
+        # 验证父子关系
+        assert hierarchy[1]["parent_id"] == 0  # parent's parent is root
+        assert hierarchy[2]["parent_id"] == 1  # child's parent is parent
+
+        # 验证路径查询
+        path = rpa.get_domain_path_to_root(2)
+        assert path == [2, 1, 0]
+
+    def test_is_confidential_handle(self):
+        """测试机密域检测"""
+        mem = Memory(1024 * 1024)
+        mem_mgr = MemoryManager(mem)
+        controller = SecurityGroupController(mem_mgr)
+
+        # 创建机密安全组
+        confidential_config = SecurityGroupConfig(
+            create_new=True,
+            confidential=True
+        )
+        confidential_handle = controller.create(owner_domain_id=1, config=confidential_config)
+
+        # 创建普通安全组
+        normal_config = SecurityGroupConfig(
+            create_new=True,
+            confidential=False
+        )
+        normal_handle = controller.create(owner_domain_id=2, config=normal_config)
+
+        assert controller.is_confidential_handle(confidential_handle) is True
+        assert controller.is_confidential_handle(normal_handle) is False
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
