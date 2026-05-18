@@ -803,8 +803,17 @@ class SimpleISA:
         try:
             # 使用 MemoryManager 进行带翻译的读取
             if self.memory_manager and len(self.pagetable_chain) > 0:
+                current_domain_id = self.rpa.current_domain.domain_id if self.rpa and self.rpa.current_domain else None
+                # 获取 ipa_regions：
+                # 1. 如果有 current_domain 且其 block.ipa_regions 非零，使用它
+                # 2. 否则使用类属性 self.ipa_regions（兼容直接设置的测试）
+                if self.rpa and self.rpa.current_domain and self.rpa.current_domain.block.ipa_regions != 0:
+                    ipa_regions = self.rpa.current_domain.block.ipa_regions
+                else:
+                    ipa_regions = self.ipa_regions
                 value, fault_owner = self.memory_manager.read_with_translation(
-                    va, self.pagetable_chain, size=4, ipa_regions=self.ipa_regions
+                    va, self.pagetable_chain, size=4, ipa_regions=ipa_regions,
+                    current_domain_id=current_domain_id
                 )
                 if fault_owner is not None:
                     # 翻译失败，触发异常
@@ -851,8 +860,17 @@ class SimpleISA:
         try:
             # 使用 MemoryManager 进行带翻译的写入
             if self.memory_manager and len(self.pagetable_chain) > 0:
+                current_domain_id = self.rpa.current_domain.domain_id if self.rpa and self.rpa.current_domain else None
+                # 获取 ipa_regions：
+                # 1. 如果有 current_domain 且其 block.ipa_regions 非零，使用它
+                # 2. 否则使用类属性 self.ipa_regions（兼容直接设置的测试）
+                if self.rpa and self.rpa.current_domain and self.rpa.current_domain.block.ipa_regions != 0:
+                    ipa_regions = self.rpa.current_domain.block.ipa_regions
+                else:
+                    ipa_regions = self.ipa_regions
                 fault_owner = self.memory_manager.write_with_translation(
-                    va, value, self.pagetable_chain, size=4, ipa_regions=self.ipa_regions
+                    va, value, self.pagetable_chain, size=4, ipa_regions=ipa_regions,
+                    current_domain_id=current_domain_id
                 )
                 if fault_owner is not None:
                     # 翻译失败，触发异常

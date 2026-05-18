@@ -123,7 +123,11 @@ class Machine:
         """通过虚拟地址读取内存"""
         chain = self.get_pagetable_chain()
         if chain:
-            value, fault_owner = self.mm.read_with_translation(va, chain, size)
+            current_domain_id = self.rpa.current_domain.domain_id if self.rpa.current_domain else None
+            ipa_regions = self.rpa.current_domain.block.ipa_regions if self.rpa.current_domain else 0
+            value, fault_owner = self.mm.read_with_translation(
+                va, chain, size, ipa_regions=ipa_regions, current_domain_id=current_domain_id
+            )
             if fault_owner is not None:
                 raise TranslationError(va, fault_owner, "Translation failed")
             return value
@@ -134,7 +138,11 @@ class Machine:
         """通过虚拟地址写入内存"""
         chain = self.get_pagetable_chain()
         if chain:
-            fault_owner = self.mm.write_with_translation(va, value, chain, size)
+            current_domain_id = self.rpa.current_domain.domain_id if self.rpa.current_domain else None
+            ipa_regions = self.rpa.current_domain.block.ipa_regions if self.rpa.current_domain else 0
+            fault_owner = self.mm.write_with_translation(
+                va, value, chain, size, ipa_regions=ipa_regions, current_domain_id=current_domain_id
+            )
             if fault_owner is not None:
                 raise TranslationError(va, fault_owner, "Translation failed")
         else:

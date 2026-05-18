@@ -1076,3 +1076,75 @@ class TestIPABoundsChecking:
 
         # IPA 0x7000 在第二个区域 0x6000-0x8000 内，访问成功
         assert core.state.get_reg(0) == 0x12345678
+
+    def test_inherit_mode_ipa_bounds_check(self):
+        """
+        INHERIT 模式（pagetable=0）：仍然检查 IPA 边界
+
+        子域使用 INHERIT 模式时，共享父域地址空间，但父域设置的 ipa_regions
+        仍然约束子域的可访问范围。
+        """
+        mem = Memory(size=256 * 1024)
+        mm = MemoryManager(physical_memory=mem)
+
+        # 不创建页表 - INHERIT 模式（pagetable = 0）
+        # pagetable_chain = [0] 表示跳过翻译
+
+        # 创建 IPA 区域表：只允许 0x2000-0x5000
+        ipa_regions = 0x20000
+        mem.write_word(ipa_regions + 0, 0x2000)  # base
+        mem.write_word(ipa_regions + 4, 0x3000)  # size
+        mem.write_word(ipa_regions + 8, 0x07)    # attr
+        # 结束标记
+        mem.write_word(ipa_regions + 12, 0)
+        mem.write_word(ipa_regions + 16, 0)
+        mem.write_word(ipa_regions + 20, 0)
+
+        # 在 PA 0x3000 写入数据（在允许范围内）
+        mem.write_word(0x3000, 0xDEADBEEF)
+
+        # 在 PA 0x6000 写入数据（超出范围）
+        mem.write_word(0x6000, 0xCAFEBABE)
+
+        rpa = RPALogic()
+        core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
+        # INHERIT 模式：pagetable_chain = [0]
+        core.pagetable_chain = [0]
+        core.ipa_regions = ipa_regions
+
+        # 测试1：访问允许范围内的地址
+        core.load_assembly("""
+            MOV R1, #0x3000
+            LDR R0, [R1]
+            HALT
+        """, base_addr=0x0000)
+
+        core.state.pc = 0x0000
+        core.run()
+
+        # 访问成功
+        assert core.state.get_reg(0) == 0xDEADBEEF
+
+        # 测试2：访问超出范围的地址
+        core.load_assembly("""
+            MOV R1, #0x6000
+            LDR R0, [R1]
+            HALT
+        """, base_addr=0x1000)
+
+        fault_info = {}
+
+        def on_fault(fault_type, va, owner):
+            fault_info['type'] = fault_type
+            fault_info['va'] = va
+            fault_info['owner'] = owner
+            core.halted = True
+
+        core.fault_handler = on_fault
+        core.state.pc = 0x1000
+        core.halted = False
+        core.run()
+
+        # IPA 0x6000 超出允许范围，应触发 fault
+        assert fault_info['type'] == 'translation'
+        assert fault_info['va'] == 0x6000

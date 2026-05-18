@@ -596,7 +596,8 @@ class MemoryManager:
 
     def translate_chain(self, va: int, pagetable_chain: List[int],
                         ipa_regions: int = 0,
-                        memory: Optional['Memory'] = None) -> TranslationResult:
+                        memory: Optional['Memory'] = None,
+                        current_domain_id: Optional[int] = None) -> TranslationResult:
         """
         沿着页表链翻译地址。
 
@@ -606,6 +607,7 @@ class MemoryManager:
                            [domain_n.pagetable, domain_n-1.pagetable, ..., domain_0.pagetable]
             ipa_regions: IPA 区域表地址（父域设置，用于边界检查）
             memory: 内存实例（用于读取 ipa_regions 表）
+            current_domain_id: 当前域 ID（用于 INHERIT 模式下的异常归属）
 
         Returns:
             TranslationResult 包含物理地址、权限和异常信息
@@ -615,8 +617,16 @@ class MemoryManager:
         r, w, x, c = True, True, True, False
 
         for i, pagetable_addr in enumerate(pagetable_chain):
-            # pagetable_addr = 0 表示跳过本层翻译
+            # pagetable_addr = 0 表示 INHERIT 模式：跳过翻译，但仍需检查 IPA 边界
             if pagetable_addr == 0:
+                # INHERIT 模式：第一层翻译时检查 IPA 边界
+                # 即使没有页表翻译，父域设置的 ipa_regions 仍然约束子域的访问范围
+                if i == 0 and ipa_regions != 0 and memory is not None:
+                    if not self._check_ipa_bounds(current_addr, ipa_regions, memory):
+                        return TranslationResult(
+                            pa=current_addr,
+                            fault_owner=current_domain_id  # 范围违规 → 子域责任
+                        )
                 continue
 
             pt = self.page_tables.get(pagetable_addr)
@@ -699,7 +709,8 @@ class MemoryManager:
 
     def read_with_translation(self, va: int, pagetable_chain: List[int],
                               size: int = 4,
-                              ipa_regions: int = 0) -> Tuple[int, Optional[int]]:
+                              ipa_regions: int = 0,
+                              current_domain_id: Optional[int] = None) -> Tuple[int, Optional[int]]:
         """
         带翻译和权限检查的读取。
 
@@ -708,6 +719,7 @@ class MemoryManager:
             pagetable_chain: 页表地址链
             size: 读取大小（1/2/4 字节）
             ipa_regions: IPA 区域表地址（用于边界检查）
+            current_domain_id: 当前域 ID（用于 INHERIT 模式下的异常归属）
 
         Returns:
             (value, fault_owner) - 读取的值和异常归属
@@ -716,7 +728,7 @@ class MemoryManager:
             PermissionError: 权限不足（不可读或访问控制区域）
             BusError: 物理地址访问失败
         """
-        result = self.translate_chain(va, pagetable_chain, ipa_regions, self.physical_memory)
+        result = self.translate_chain(va, pagetable_chain, ipa_regions, self.physical_memory, current_domain_id)
         if result.fault_owner is not None:
             return (0, result.fault_owner)
 
@@ -741,7 +753,8 @@ class MemoryManager:
 
     def write_with_translation(self, va: int, value: int,
                                pagetable_chain: List[int], size: int = 4,
-                               ipa_regions: int = 0) -> Optional[int]:
+                               ipa_regions: int = 0,
+                               current_domain_id: Optional[int] = None) -> Optional[int]:
         """
         带翻译和权限检查的写入。
 
@@ -751,6 +764,7 @@ class MemoryManager:
             pagetable_chain: 页表地址链
             size: 写入大小（1/2/4 字节）
             ipa_regions: IPA 区域表地址（用于边界检查）
+            current_domain_id: 当前域 ID（用于 INHERIT 模式下的异常归属）
 
         Returns:
             fault_owner 如果翻译失败，否则 None
@@ -759,7 +773,7 @@ class MemoryManager:
             PermissionError: 权限不足（不可写或访问控制区域）
             BusError: 物理地址访问失败
         """
-        result = self.translate_chain(va, pagetable_chain, ipa_regions, self.physical_memory)
+        result = self.translate_chain(va, pagetable_chain, ipa_regions, self.physical_memory, current_domain_id)
         if result.fault_owner is not None:
             return result.fault_owner
 
