@@ -1,126 +1,135 @@
-# RPA Simulator
+# RPA-PySim
 
-Recursive Privilege Architecture (RPA) 可执行规范与概念验证模拟器。
+Executable specification and proof-of-concept simulator for the [Recursive Privilege Architecture (RPA)](#).
 
-## 项目定位
+[中文文档](README_zh.md)
 
-本项目是 RPA 架构的**可执行规范 (executable specification)**，用于：
+## Overview
 
-1. **语义验证**：90 个测试用例证明 RPA 原语语义正确性
-2. **设计文档**：代码即规范，精确描述 RPA 原语行为
-3. **可复现研究**：支持独立验证和后续研究
+RPA-PySim is an **executable specification** for the Recursive Privilege Architecture, designed to:
 
-本项目**不是**周期精确模拟器。性能评估请参考 gem5 等专业工具。
+1. **Verify semantics**: 90+ test cases prove the correctness of RPA primitives
+2. **Document the design**: Code as specification — precisely describes RPA primitive behavior
+3. **Enable reproducible research**: Supports independent verification and follow-up studies
 
-## License
+> **Note**: This project is **not** a cycle-accurate simulator. For performance evaluation, use tools like gem5.
 
-MIT License - 详见 [LICENSE](LICENSE)
+## Key Features
 
-## 项目结构
+- **RPA Primitives**: `DESCEND`, `ASCEND`, `RETURN`, `EXIT`
+- **DomainBlock**: 32-byte control structure with parent/child ownership model
+- **Page Table Stacking**: Multi-level address translation with chain walking
+- **IPA Boundary Checking**: Hardware-enforced memory isolation between domains
+- **Security Groups**: Encryption, DMA access control, and confidential domain support
+- **Interrupt Controller**: Priority-based interrupt handling with domain isolation
 
-```
-rpa-pysim/
-├── rpa_sim/              # 核心模拟器
-│   ├── __init__.py       # 包导出
-│   ├── rpa_logic.py      # RPA核心原语实现
-│   ├── isa_simple.py     # 简化ISA解释器
-│   ├── memory.py         # 内存和页表管理
-│   ├── machine.py        # 完整机器集成
-│   ├── security_group.py # 安全组机制
-│   ├── interrupt.py      # 中断控制器
-│   └── stdio.py          # 标准IO设备
-├── tests/                # 单元测试 (90个测试用例)
-│   ├── test_rpa.py       # RPA核心测试
-│   ├── test_isa_simple.py # ISA测试
-│   ├── test_security_group.py # 安全组测试
-│   └── test_thread_exception.py # 线程异常测试
-├── docs/                 # 文档
-│   ├── CONTROL_BLOCK_SPEC.md # 控制块规范
-│   ├── SECURITY_GROUP_SPEC.md # 安全组规范
-│   ├── IMPLEMENTATION_GUIDE.md # 实现解读
-│   └── CONFIDENTIAL_DESTROY_DESIGN.md # 机密域销毁设计
-├── LICENSE               # MIT License
-├── pyproject.toml        # 项目配置
-├── requirements.txt
-└── README.md
-```
+## Quick Start
 
-## 安装
+### Installation
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 快速开始
+### Example
 
 ```python
 from rpa_sim import RPALogic, DomainBlock, Memory, SimpleISA
 
-# 创建RPA核心和内存
+# Create RPA core and memory
 mem = Memory(size=64 * 1024)
 rpa = RPALogic()
 rpa.memory = mem
 
-# 设置子域控制块
+# Set up child domain control block
 block_addr = 0x1000
 mem.write_word(block_addr + 0x00, 32)      # ctrlblock_size
 mem.write_word(block_addr + 0x10, 0)       # ipa_regions
-mem.write_word(block_addr + 0x2C, 0x2000)  # saved_lr (入口地址)
+mem.write_word(block_addr + 0x2C, 0x2000)  # saved_lr (entry point)
 
-# 创建ISA核心并执行
+# Create ISA core and execute
 core = SimpleISA(rpa=rpa, memory=mem)
 core.load_assembly("MOV R0, #0x1000\nDESCEND R0", base_addr=0)
 core.run()
 ```
 
-## RPA 核心原语
+## RPA Primitives
 
-| 指令 | 说明 |
-|------|------|
-| `DESCEND Rn` | 进入子域，Rn 为子域控制块地址 |
-| `ASCEND Rn` | 请求父域服务，Rn 为服务类型 |
-| `RETURN Rn` | 从父域返回子域，Rn 为子域控制块地址 |
-| `EXIT Rn` | 退出子域并释放资源，Rn=0 |
+| Instruction | Description |
+|-------------|-------------|
+| `DESCEND Rn` | Enter child domain; Rn = child control block address |
+| `ASCEND Rn` | Request parent service; Rn = service type |
+| `RETURN Rn` | Return from parent to child; Rn = child control block address |
+| `EXIT Rn` | Exit child domain and release resources; Rn = 0 |
 
-## DomainBlock 内存布局
+## DomainBlock Layout
 
-RPA Spec Field（固定 8 words，32 字节）：
+RPA Spec Field (fixed 8 words, 32 bytes):
 
-| 偏移 | 字段 | 设置者 | 说明 |
-|------|------|--------|------|
-| 0x00 | ctrlblock_size | 父域 | 控制块大小（单位：word，最小8） |
-| 0x04 | domain_id | 系统 | 域ID（DMA访问控制使用） |
-| 0x08 | trap_vector | 子域 | Trap处理入口（0=传播到父域） |
-| 0x0C | interrupt_ctrl | 系统 | 中断控制器 handle |
-| 0x10 | ipa_regions | 父域 | IPA区域表地址（子域只读） |
-| 0x14 | pagetable | 子域 | 页表地址（子域可写） |
-| 0x18 | child_block | 父域 | 子域控制块地址（父域维护） |
-| 0x1C | security_group | 系统 | 安全组 handle |
+| Offset | Field | Set by | Description |
+|--------|-------|--------|-------------|
+| 0x00 | ctrlblock_size | Parent | Control block size (in words, minimum 8) |
+| 0x04 | domain_id | System | Domain ID (used for DMA access control) |
+| 0x08 | trap_vector | Child | Trap handler entry (0 = propagate to parent) |
+| 0x0C | interrupt_ctrl | System | Interrupt controller handle |
+| 0x10 | ipa_regions | Parent | IPA region table address (child read-only) |
+| 0x14 | pagetable | Child | Page table address (child writable) |
+| 0x18 | child_block | Parent | Child control block address (parent maintained) |
+| 0x1C | security_group | System | Security group handle |
 
-ISA Context Field（平台相关，紧随 RPA Spec Field 之后）：由具体 ISA 实现定义。
+ISA Context Field (platform-specific, immediately follows RPA Spec Field): defined by each ISA implementation.
 
-## 测试覆盖
+## Project Structure
+
+```
+rpa-pysim/
+├── rpa_sim/              # Core simulator
+│   ├── __init__.py       # Package exports
+│   ├── rpa_logic.py      # RPA core primitives
+│   ├── isa_simple.py     # Simplified ISA interpreter
+│   ├── memory.py         # Memory and page table management
+│   ├── machine.py        # Full machine integration
+│   ├── security_group.py # Security group mechanism
+│   ├── interrupt.py      # Interrupt controller
+│   └── stdio.py          # Console I/O device
+├── tests/                # Unit tests (90+ test cases)
+│   ├── test_rpa.py       # RPA core tests
+│   ├── test_isa_simple.py # ISA tests
+│   ├── test_security_group.py # Security group tests
+│   └── test_thread_exception.py # Thread/exception tests
+├── docs/                 # Documentation
+│   ├── CONTROL_BLOCK_SPEC.md # DomainBlock specification
+│   ├── SECURITY_GROUP_SPEC.md # Security group specification
+│   ├── IMPLEMENTATION_GUIDE.md # Implementation guide
+│   └── CONFIDENTIAL_DESTROY_DESIGN.md # Confidential domain destruction
+├── LICENSE               # MIT License
+├── pyproject.toml        # Project configuration
+├── requirements.txt
+└── README.md
+```
+
+## Testing
 
 ```bash
-# 运行所有测试
+# Run all tests
 python -m pytest tests/ -v
 
-# 生成覆盖率报告
+# Generate coverage report
 python -m pytest tests/ --cov=rpa_sim --cov-report=html
 ```
 
-### 测试覆盖范围
+### Test Coverage
 
-| 模块 | 测试内容 |
-|------|----------|
-| `test_rpa.py` | 域操作 (descend/ascend/return/exit)、页表翻译、IPA边界检查 |
-| `test_isa_simple.py` | ISA指令执行、内存翻译、中断处理 |
-| `test_security_group.py` | 安全组创建、证明验证、加密内存、DMA访问控制 |
-| `test_thread_exception.py` | 线程异常处理 |
+| Module | Coverage |
+|--------|----------|
+| `test_rpa.py` | Domain operations (descend/ascend/return/exit), page table translation, IPA boundary checking |
+| `test_isa_simple.py` | ISA instruction execution, memory translation, interrupt handling |
+| `test_security_group.py` | Security group creation, attestation verification, encrypted memory, DMA access control |
+| `test_thread_exception.py` | Thread exception handling, multi-level translation, fault handling |
 
-## 学术引用
+## Citation
 
-如果您在学术研究中使用本项目，请引用：
+If you use this project in academic research, please cite:
 
 ```bibtex
 @software{rpa-pysim2025,
@@ -132,20 +141,18 @@ python -m pytest tests/ --cov=rpa_sim --cov-report=html
 }
 ```
 
-DOI 待分配，计划通过 Zenodo 获取。
+## Documentation
 
-## 相关文档
+- `docs/CONTROL_BLOCK_SPEC.md` — DomainBlock detailed specification
+- `docs/SECURITY_GROUP_SPEC.md` — Security group mechanism specification
+- `docs/IMPLEMENTATION_GUIDE.md` — Implementation guide
+- `docs/CONFIDENTIAL_DESTROY_DESIGN.md` — Confidential domain destruction design
+- `notes.md` — Design notes
 
-- `docs/CONTROL_BLOCK_SPEC.md` - DomainBlock 详细规范
-- `docs/SECURITY_GROUP_SPEC.md` - 安全组机制规范
-- `docs/IMPLEMENTATION_GUIDE.md` - 实现解读
-- `docs/CONFIDENTIAL_DESTROY_DESIGN.md` - 机密域销毁设计
-- `notes.md` - 设计笔记
+## License
 
-## 参考
+MIT License — see [LICENSE](LICENSE)
 
-本实现基于 RPA 技术规范，论文审核中，待公开后引用。
-
-## 致谢
+## Acknowledgments
 
 AI assisted by GLM5.
