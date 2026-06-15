@@ -105,7 +105,7 @@ RPA 指令：DESCEND, ASCEND, RETURN, SYSOP
     │  LDR/STR    │      │ chain        │      │  read/write │
     └─────────────┘      └─────────────┘      └─────────────┘
 
-    pagetable_chain = [domain_n.pagetable, ..., domain_0.pagetable]
+    pagetable_chain = [domain_n.page_table, ..., domain_0.page_table]
     ipa_regions = 当前域的 IPA 约束 (用于边界检查)
     翻译失败 → TranslationError(memtable_owner)
 
@@ -124,7 +124,7 @@ from typing import Dict, List, Optional, Callable, Any, Tuple
 from enum import Enum, auto
 
 # DomainBlock field offsets (imported from rpa_logic)
-OFFSET_PAGETABLE = 0x18  # 页表地址 (子域设置)
+OFFSET_PAGE_TABLE = 0x18  # 页表地址 (子域设置)
 import re
 
 # Import priority constants
@@ -591,8 +591,8 @@ class SimpleISA:
             self.interrupt_controller.set_priority_controller(self.priority_controller)
 
         # 当前 Domain 的页表翻译链
-        # [domain_n.pagetable, ..., domain_0.pagetable]
-        self.pagetable_chain: List[int] = []
+        # [domain_n.page_table, ..., domain_0.page_table]
+        self.page_table_chain: List[int] = []
 
         # 当前 Domain 的 IPA 约束 (父域设置的地址范围)
         self.ipa_regions: int = 0
@@ -802,7 +802,7 @@ class SimpleISA:
 
         try:
             # 使用 MemoryManager 进行带翻译的读取
-            if self.memory_manager and len(self.pagetable_chain) > 0:
+            if self.memory_manager and len(self.page_table_chain) > 0:
                 current_domain_id = self.rpa.current_domain.domain_id if self.rpa and self.rpa.current_domain else None
                 # 获取 ipa_regions：
                 # 1. 如果有 current_domain 且其 block.ipa_regions 非零，使用它
@@ -812,7 +812,7 @@ class SimpleISA:
                 else:
                     ipa_regions = self.ipa_regions
                 value, fault_owner = self.memory_manager.read_with_translation(
-                    va, self.pagetable_chain, size=4, ipa_regions=ipa_regions,
+                    va, self.page_table_chain, size=4, ipa_regions=ipa_regions,
                     current_domain_id=current_domain_id
                 )
                 if fault_owner is not None:
@@ -859,7 +859,7 @@ class SimpleISA:
 
         try:
             # 使用 MemoryManager 进行带翻译的写入
-            if self.memory_manager and len(self.pagetable_chain) > 0:
+            if self.memory_manager and len(self.page_table_chain) > 0:
                 current_domain_id = self.rpa.current_domain.domain_id if self.rpa and self.rpa.current_domain else None
                 # 获取 ipa_regions：
                 # 1. 如果有 current_domain 且其 block.ipa_regions 非零，使用它
@@ -869,7 +869,7 @@ class SimpleISA:
                 else:
                     ipa_regions = self.ipa_regions
                 fault_owner = self.memory_manager.write_with_translation(
-                    va, value, self.pagetable_chain, size=4, ipa_regions=ipa_regions,
+                    va, value, self.page_table_chain, size=4, ipa_regions=ipa_regions,
                     current_domain_id=current_domain_id
                 )
                 if fault_owner is not None:
@@ -985,7 +985,7 @@ class SimpleISA:
             target_handle = self.state.get_reg(rn) if rn else arg1
             irq_num = arg2
             # 需要当前域的 handle
-            current_handle = self.rpa.current_domain.block.interrupt_ctrl
+            current_handle = self.rpa.current_domain.block.interrupt_controller
             if current_handle:
                 self.interrupt_controller.sgi(current_handle, target_handle, irq_num)
 
@@ -1018,7 +1018,7 @@ class SimpleISA:
             table_addr = self.ipa_regions
         else:  # op == 0x03
             # Read pagetable from current domain's control block
-            table_addr = self.memory.read_word(self.domain_block_addr + OFFSET_PAGETABLE) if self.memory else 0
+            table_addr = self.memory.read_word(self.domain_block_addr + OFFSET_PAGE_TABLE) if self.memory else 0
 
         if subop == QUERY:
             # Query entry at index arg1
@@ -1329,7 +1329,7 @@ class SimpleISA:
 
         # 更新页表链和 IPA 区域
         if pagetable != 0:
-            self.pagetable_chain = [pagetable] + self.pagetable_chain
+            self.page_table_chain = [pagetable] + self.page_table_chain
         self.ipa_regions = ipa_regions  # 当前域的 IPA 约束
         # 更新 domain_block_addr
         self.domain_block_addr = block_addr
@@ -1367,8 +1367,8 @@ class SimpleISA:
         else:
             self.halted = True
         # 更新页表链（移除当前域的页表）
-        if self.pagetable_chain:
-            self.pagetable_chain = self.pagetable_chain[1:]
+        if self.page_table_chain:
+            self.page_table_chain = self.page_table_chain[1:]
         # 恢复父域的 IPA 约束
         parent_block = self.rpa.current_domain.block
         self.ipa_regions = parent_block.ipa_regions if parent_block else 0
@@ -1470,7 +1470,7 @@ class SimpleISA:
             "flags": {"N": self.state.n, "Z": self.state.z, "C": self.state.c, "V": self.state.v},
             "pc": hex(self.state.pc),
             "halted": self.halted,
-            "pagetable_chain": [hex(m) for m in self.pagetable_chain],
+            "pagetable_chain": [hex(m) for m in self.page_table_chain],
             "ipa_regions": hex(self.ipa_regions),
         }
 

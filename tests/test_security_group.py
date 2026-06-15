@@ -229,8 +229,8 @@ class TestSecurityGroupWithRPALogic:
 
         # 准备 DomainBlock
         block_addr = 0x1000
-        block = DomainBlock(ctrlblock_size=32, trap_vector=0x8004)
-        mem.write_word(block_addr + 0x00, block.ctrlblock_size)
+        block = DomainBlock(control_block_size=32, trap_vector=0x8004)
+        mem.write_word(block_addr + 0x00, block.control_block_size)
         mem.write_word(block_addr + 0x08, block.trap_vector)  # trap_vector at 0x08
         mem.write_word(block_addr + 0x1C, 0)  # security_group = 0 (继承)
 
@@ -259,8 +259,8 @@ class TestSecurityGroupWithRPALogic:
 
         # 准备 DomainBlock
         block_addr = 0x1000
-        block = DomainBlock(ctrlblock_size=32, trap_vector=0x8004)
-        mem.write_word(block_addr + 0x00, block.ctrlblock_size)
+        block = DomainBlock(control_block_size=32, trap_vector=0x8004)
+        mem.write_word(block_addr + 0x00, block.control_block_size)
         mem.write_word(block_addr + 0x08, block.trap_vector)  # trap_vector at 0x08
         mem.write_word(block_addr + 0x1C, sec_handle)  # 指定安全组 at 0x1C
 
@@ -516,11 +516,11 @@ class TestConfidentialDomainDestruction:
         child_block_addr = 0x2000
 
         # 父域 DCB
-        mem.write_word(parent_block_addr + 0x00, 32)  # ctrlblock_size
+        mem.write_word(parent_block_addr + 0x00, 32)  # control_block_size
         mem.write_word(parent_block_addr + 0x1C, parent_handle)  # security_group
 
         # 子域 DCB（父域创建）
-        mem.write_word(child_block_addr + 0x00, 32)  # ctrlblock_size
+        mem.write_word(child_block_addr + 0x00, 32)  # control_block_size
         mem.write_word(child_block_addr + 0x1C, child_handle)  # security_group
         mem.write_word(child_block_addr + 0x08, 0x8004)  # trap_vector
 

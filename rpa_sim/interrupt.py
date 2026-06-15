@@ -10,7 +10,7 @@ Interrupt Controller - 中断控制器模块
 设计原则：
 - 中断控制器与域不是一对一关系
 - 域需要申请实例获得 handle
-- handle 设置在 DomainBlock.interrupt_ctrl
+- handle 设置在 DomainBlock.interrupt_controller
 - 中断向量保存在实例中，不在 block 中
 
 实例结构：

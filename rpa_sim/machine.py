@@ -81,7 +81,7 @@ class Machine:
         """
         获取当前 Domain 的页表翻译链
 
-        返回: [domain_n.pagetable, ..., domain_0.pagetable]
+        返回: [domain_n.page_table, ..., domain_0.page_table]
         """
         return self.rpa.get_pagetable_chain()
 

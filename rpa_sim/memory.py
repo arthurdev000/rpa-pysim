@@ -15,12 +15,12 @@ Memory Manager - Physical memory and page table simulation
 
 翻译链示例：
     Domain 2 访问 VA2:
-      ipa2 = translate(domain2.pagetable, va2)
-           - 访问页表数据需要用 domain1.pagetable 翻译
+      ipa2 = translate(domain2.page_table, va2)
+           - 访问页表数据需要用 domain1.page_table 翻译
            - 失败 → 报给 domain2
-      ipa1 = translate(domain1.pagetable, ipa2)
+      ipa1 = translate(domain1.page_table, ipa2)
            - 失败 → 报给 domain1
-      pa = translate(domain0.pagetable, ipa1)
+      pa = translate(domain0.page_table, ipa1)
            - 失败 → 报给 domain0 (root)
       访问 pa → 总线错误
 """
@@ -509,9 +509,9 @@ class MemoryManager:
 
     翻译链示例：
         Domain 2 访问 VA:
-        1. 用 domain2.pagetable 的页表翻译 → 失败报给 domain2
-        2. 用 domain1.pagetable 的页表翻译 → 失败报给 domain1
-        3. 用 domain0.pagetable 的页表翻译 → 失败报给 domain0
+        1. 用 domain2.page_table 的页表翻译 → 失败报给 domain2
+        2. 用 domain1.page_table 的页表翻译 → 失败报给 domain1
+        3. 用 domain0.page_table 的页表翻译 → 失败报给 domain0
         4. 访问最终物理地址 → 失败报总线错误
     """
 
@@ -604,7 +604,7 @@ class MemoryManager:
         Args:
             va: 虚拟地址
             pagetable_chain: 从当前域到根域的 pagetable 地址列表
-                           [domain_n.pagetable, domain_n-1.pagetable, ..., domain_0.pagetable]
+                           [domain_n.page_table, domain_n-1.page_table, ..., domain_0.page_table]
             ipa_regions: IPA 区域表地址（父域设置，用于边界检查）
             memory: 内存实例（用于读取 ipa_regions 表）
             current_domain_id: 当前域 ID（用于 INHERIT 模式下的异常归属）

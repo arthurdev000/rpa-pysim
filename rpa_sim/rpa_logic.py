@@ -310,27 +310,40 @@ CTRLBLOCK_ALIGN = CTRLBLOCK_ALIGN_WORDS * WORD_SIZE
 CTRLBLOCK_MIN_SIZE = CTRLBLOCK_MIN_WORDS * WORD_SIZE
 
 # DomainBlock 字段偏移（新布局）
-# 偏移  字段              设置者    用途
-# 0x00  ctrlblock_size   父域     控制块大小（单位：word）
-# 0x04  domain_id        系统     域标识（DMA 访问控制使用此 ID）
-# 0x08  trap_vector      子域     Trap 处理入口（0 = 传播到父域）
-# 0x0C  interrupt_ctrl   系统     中断控制器 handle
-# 0x10  ipa_regions      父域     IPA 区域表地址（父域设置，子域只读）
-# 0x14  pagetable        子域     页表地址（子域设置，可写）
-# 0x18  child_block      父域     子域控制块地址（父域维护）
-# 0x1C  security_group  系统     安全组 handle
-OFFSET_CTRLBLOCK_SIZE = 0x00
+# 偏移  字段                  设置者    用途
+# 0x00  control_block_size   父域     控制块大小（单位：word）
+# 0x04  domain_id            系统     域标识（DMA 访问控制使用此 ID）
+# 0x08  trap_vector          子域     Trap 处理入口（0 = 传播到父域）
+# 0x0C  interrupt_controller 系统     中断控制器 handle
+# 0x10  ipa_regions          父域     IPA 区域表地址（父域设置，子域只读）
+# 0x14  page_table           子域     页表地址（子域设置，可写）
+# 0x18  child_block          父域     子域控制块地址（父域维护）
+# 0x1C  security_group       系统     安全组 handle
+# --- RPA Spec Field 结束，以下是 RPA Impdef Field ---
+# 0x20  isa_tag              父域     ISA标识（0=继承父域，descend时解析为实际值）
+OFFSET_CONTROL_BLOCK_SIZE = 0x00
 OFFSET_DOMAIN_ID = 0x04
 OFFSET_TRAP_VECTOR = 0x08
-OFFSET_INTERRUPT_CTRL = 0x0C
+OFFSET_INTERRUPT_CONTROLLER = 0x0C
 OFFSET_IPA_REGIONS = 0x10
-OFFSET_PAGETABLE = 0x14
+OFFSET_PAGE_TABLE = 0x14
 OFFSET_CHILD_BLOCK = 0x18
 OFFSET_SECURITY_GROUP = 0x1C
+# RPA Impdef Field (ISA Specific)
+OFFSET_ISA_TAG = 0x20  # ISA标识，属于Impdef Field而非Spec Field
+
+# ISA Tag 定义
+ISA_TAG_INHERIT = 0x0000  # 继承父域ISA（descend时解析为实际值）
+ISA_TAG_ARM     = 0x0001  # ARM/AArch64
+ISA_TAG_RISCV   = 0x0002  # RISC-V
+ISA_TAG_X86     = 0x0003  # x86-64
+ISA_TAG_IBMZ    = 0x0004  # IBM Z
 
 # DomainBlock 大小常量
-CTRLBLOCK_BASE_SIZE = 0x20          # 基本大小 32 字节
-CTRLBLOCK_ISA_CONTEXT_SIZE = 0x10   # ISA 上下文保存区 16 字节 (SP+LR+PSR+reserved)
+CTRLBLOCK_SPEC_SIZE = 0x20         # RPA Spec Field: 32 字节 (8 words)
+CTRLBLOCK_IMPEDEF_MIN_SIZE = 0x04  # RPA Impdef Field 最小: 4 字节 (isa_tag)
+CTRLBLOCK_BASE_SIZE = 0x24         # 基本大小 36 字节 (Spec + isa_tag)
+CTRLBLOCK_ISA_CONTEXT_SIZE = 0x10  # ISA Context Field: 16 字节 (SP+LR+PSR+reserved)
 
 # IPA 区域表 / 页表条目格式
 # 每个条目 12 字节: base(4) + size(4) + attr(4)
@@ -351,44 +364,53 @@ class DomainBlock:
 
     结构布局（三段式）：
     ┌─────────────────────────────────────────────────────────────┐
-    │ RPA Spec Field (固定 8 words)                              │
+    │ RPA Spec Field (固定 8 words, 0x00-0x1C)                   │
     │   由 RPA 架构规范定义，跨平台统一                           │
     │   字段：ctrlblock_size, domain_id, trap_vector,            │
     │         interrupt_ctrl, ipa_regions, pagetable,            │
     │         child_block, security_group                       │
     ├─────────────────────────────────────────────────────────────┤
-    │ RPA Impdef Field (可变)                                    │
+    │ RPA Impdef Field (可变, 0x20起)                            │
     │   大小：ctrlblock_size - 8 words                           │
-    │   内容：trap_delegate、中断控制器状态、平台扩展             │
+    │   内容：isa_tag、平台扩展                                   │
+    │   isa_tag (0x20): ISA标识，决定ISA Context Field格式       │
     │   访问：软件用 SYSOP，RTL 直接访问                          │
     ├─────────────────────────────────────────────────────────────┤
-    │ ISA Context Field (可变)                                   │
+    │ ISA Context Field (可变, 由isa_tag决定格式)                │
     │   大小：由 ISA 规范定义                                     │
-    │   内容：通用寄存器、状态寄存器、扩展寄存器                   │
+    │   ARM: saved_sp(0x24), saved_lr(0x28), saved_psr(0x2C)     │
+    │   x86: saved_rsp(0x24), saved_rip(0x2C), saved_rflags(0x34)│
     └─────────────────────────────────────────────────────────────┘
 
     字段布局（RPA Spec Field）：
-    偏移  字段              设置者    用途
-    0x00  ctrlblock_size   父域     控制块大小（单位：word）
-    0x04  domain_id        系统     域标识
-    0x08  trap_vector      子域     Trap 处理入口（0 = 传播到父域）
-    0x0C  interrupt_ctrl   系统     中断控制器 handle
-    0x10  ipa_regions      父域     IPA 区域表地址（只读）
-    0x14  pagetable        子域     页表地址（可写）
-    0x18  child_block      父域     子域控制块地址
-    0x1C  security_group  系统     安全组 handle
+    偏移  字段                 设置者    用途
+    0x00  control_block_size  父域     控制块大小（单位：word）
+    0x04  domain_id           系统     域标识
+    0x08  trap_vector         子域     Trap 处理入口（0 = 传播到父域）
+    0x0C  interrupt_controller 系统    中断控制器 handle
+    0x10  ipa_regions         父域     IPA 区域表地址（只读）
+    0x14  page_table          子域     页表地址（可写）
+    0x18  child_block         父域     子域控制块地址
+    0x1C  security_group      系统     安全组 handle
+
+    字段布局（RPA Impdef Field）：
+    偏移  字段                 设置者    用途
+    0x20  isa_tag             父域     ISA标识（0=继承父域，descend时解析）
 
     见文件头部 ASCII 图解
     """
-    # 基本字段
-    ctrlblock_size: int = CTRLBLOCK_WORDS  # 0x00: 控制块大小（单位：word，默认 8）
-    domain_id: int = 0                      # 0x04: 域ID（系统分配，DMA 访问控制使用此 ID）
-    trap_vector: int = 0                    # 0x08: Trap 处理入口（子域设置，0 = 传播到父域）
-    interrupt_ctrl: int = 0                 # 0x0C: 中断控制器 handle（系统分配）
-    ipa_regions: int = 0                    # 0x10: IPA 区域表地址（父域设置，子域只读）
-    pagetable: int = 0                      # 0x14: 页表地址（子域设置，可写）
-    child_block: int = 0                    # 0x18: 子域控制块地址（父域维护）
-    security_group: int = 0                # 0x1C: 安全组 handle（系统分配）
+    # RPA Spec Field
+    control_block_size: int = CTRLBLOCK_WORDS   # 0x00: 控制块大小（单位：word，默认 8）
+    domain_id: int = 0                           # 0x04: 域ID（系统分配，DMA 访问控制使用此 ID）
+    trap_vector: int = 0                         # 0x08: Trap 处理入口（子域设置，0 = 传播到父域）
+    interrupt_controller: int = 0                # 0x0C: 中断控制器 handle（系统分配）
+    ipa_regions: int = 0                         # 0x10: IPA 区域表地址（父域设置，子域只读）
+    page_table: int = 0                          # 0x14: 页表地址（子域设置，可写）
+    child_block: int = 0                         # 0x18: 子域控制块地址（父域维护）
+    security_group: int = 0                      # 0x1C: 安全组 handle（系统分配）
+
+    # RPA Impdef Field
+    isa_tag: int = 0                             # 0x20: ISA标识（0=继承父域，descend时解析）
 
     # 向后兼容字段（不存储在内存中）
     params: Dict[str, Any] = field(default_factory=dict)
@@ -446,7 +468,7 @@ class RPALogic:
 
         # 根域 (domain_id = 0)
         root_block = DomainBlock(
-            ctrlblock_size=CTRLBLOCK_WORDS,
+            control_block_size=CTRLBLOCK_WORDS,
             trap_vector=0x8004,
             domain_id=0,
         )
@@ -560,7 +582,7 @@ class RPALogic:
             self.current_domain = existing_domain
             self.stats["descend_count"] += 1
             return {
-                "pagetable": existing_domain.block.pagetable,
+                "pagetable": existing_domain.block.page_table,
                 "ipa_regions": existing_domain.block.ipa_regions,
                 "domain_id": existing_domain.domain_id,
                 "is_first": False,  # 标记为非首次
@@ -576,6 +598,15 @@ class RPALogic:
 
         # 首次 DESCEND：创建新域
         block = self._read_domain_block(block_addr)
+
+        # ISA 标签解析：如果 isa_tag == INHERIT (0)，则继承父域的 ISA
+        if block.isa_tag == ISA_TAG_INHERIT:
+            # 解析为父域的实际 ISA 值
+            parent_isa_tag = self.current_domain.block.isa_tag
+            block.isa_tag = parent_isa_tag
+            # 写回内存
+            if self.memory:
+                self.memory.write_word(block_addr + OFFSET_ISA_TAG, parent_isa_tag)
 
         # 读取安全组配置
         sec_domain_handle = block.security_group
@@ -609,6 +640,7 @@ class RPALogic:
         if self.memory:
             self.memory.write_word(block_addr + OFFSET_DOMAIN_ID, domain_id)
             self.memory.write_word(block_addr + OFFSET_SECURITY_GROUP, sec_domain_handle)
+            self.memory.write_word(block_addr + OFFSET_ISA_TAG, block.isa_tag)
             self.memory.write_word(self.current_domain.block_addr + OFFSET_CHILD_BLOCK, block_addr)
 
         # 绑定到安全组
@@ -632,7 +664,7 @@ class RPALogic:
         self.stats["descend_count"] += 1
 
         return {
-            "pagetable": block.pagetable,
+            "pagetable": block.page_table,
             "ipa_regions": block.ipa_regions,
             "domain_id": domain_id,
             "is_first": True,  # 标记为首次
@@ -815,28 +847,30 @@ class RPALogic:
         """从内存读取 DomainBlock"""
         if self.memory:
             return DomainBlock(
-                ctrlblock_size=self.memory.read_word(addr + OFFSET_CTRLBLOCK_SIZE),
+                control_block_size=self.memory.read_word(addr + OFFSET_CONTROL_BLOCK_SIZE),
                 domain_id=self.memory.read_word(addr + OFFSET_DOMAIN_ID),
                 trap_vector=self.memory.read_word(addr + OFFSET_TRAP_VECTOR),
-                interrupt_ctrl=self.memory.read_word(addr + OFFSET_INTERRUPT_CTRL),
+                interrupt_controller=self.memory.read_word(addr + OFFSET_INTERRUPT_CONTROLLER),
                 ipa_regions=self.memory.read_word(addr + OFFSET_IPA_REGIONS),
-                pagetable=self.memory.read_word(addr + OFFSET_PAGETABLE),
+                page_table=self.memory.read_word(addr + OFFSET_PAGE_TABLE),
                 child_block=self.memory.read_word(addr + OFFSET_CHILD_BLOCK),
                 security_group=self.memory.read_word(addr + OFFSET_SECURITY_GROUP),
+                isa_tag=self.memory.read_word(addr + OFFSET_ISA_TAG),
             )
         return DomainBlock()
 
     def _write_domain_block(self, addr: int, block: DomainBlock) -> None:
         """写入 DomainBlock 到内存"""
         if self.memory:
-            self.memory.write_word(addr + OFFSET_CTRLBLOCK_SIZE, block.ctrlblock_size)
+            self.memory.write_word(addr + OFFSET_CONTROL_BLOCK_SIZE, block.control_block_size)
             self.memory.write_word(addr + OFFSET_DOMAIN_ID, block.domain_id)
             self.memory.write_word(addr + OFFSET_TRAP_VECTOR, block.trap_vector)
-            self.memory.write_word(addr + OFFSET_INTERRUPT_CTRL, block.interrupt_ctrl)
+            self.memory.write_word(addr + OFFSET_INTERRUPT_CONTROLLER, block.interrupt_controller)
             self.memory.write_word(addr + OFFSET_IPA_REGIONS, block.ipa_regions)
-            self.memory.write_word(addr + OFFSET_PAGETABLE, block.pagetable)
+            self.memory.write_word(addr + OFFSET_PAGE_TABLE, block.page_table)
             self.memory.write_word(addr + OFFSET_CHILD_BLOCK, block.child_block)
             self.memory.write_word(addr + OFFSET_SECURITY_GROUP, block.security_group)
+            self.memory.write_word(addr + OFFSET_ISA_TAG, block.isa_tag)
 
     def _get_pc(self) -> int:
         """获取当前 PC"""

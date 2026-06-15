@@ -144,9 +144,9 @@ class TestDescendAscend:
         # 验证：ASCEND 跳转到了父域的 trap_vector 并执行了异常处理代码
         assert core.state.get_reg(2) == 0xCAFE
 
-    def test_descend_updates_pagetable_chain(self):
+    def test_descend_updates_page_table_chain(self):
         """
-        DESCEND 更新 pagetable_chain，ASCEND 恢复
+        DESCEND 更新 page_table_chain，ASCEND 恢复
         """
         mem = Memory(size=64 * 1024)
 
@@ -159,7 +159,7 @@ class TestDescendAscend:
         rpa = RPALogic()
         rpa.memory = mem
         core = SimpleISA(rpa=rpa, memory=mem)
-        core.pagetable_chain = []
+        core.page_table_chain = []
 
         core.load_assembly("""
             MOV R0, #0x0800
@@ -178,8 +178,8 @@ class TestDescendAscend:
         core.state.pc = 0x0000
         core.run()
 
-        # ASCEND 后 pagetable_chain 应该恢复为空
-        assert core.pagetable_chain == []
+        # ASCEND 后 page_table_chain 应该恢复为空
+        assert core.page_table_chain == []
 
     def test_shared_memory_between_domains(self):
         """
@@ -294,7 +294,7 @@ class TestMemoryTranslation:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.pagetable_chain = [0x10000]
+        core.page_table_chain = [0x10000]
 
         core.load_assembly("""
             MOV R1, #0x1000
@@ -320,7 +320,7 @@ class TestMemoryTranslation:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.pagetable_chain = [0x10000]
+        core.page_table_chain = [0x10000]
 
         core.load_assembly("""
             MOV R0, #0xCAFEBABE
@@ -368,7 +368,7 @@ class TestMemoryTranslation:
         rpa = RPALogic()
         rpa.memory = mem
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.pagetable_chain = [0x10000]  # Domain 0 的页表
+        core.page_table_chain = [0x10000]  # Domain 0 的页表
 
         # 主程序
         core.load_assembly("""
@@ -415,7 +415,7 @@ class TestFaultHandling:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.pagetable_chain = [0x10000]
+        core.page_table_chain = [0x10000]
 
         core.load_assembly("""
             MOV R0, #0x5000
@@ -497,8 +497,8 @@ class TestMultiLevelTranslation:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        # pagetable_chain: [Domain 1 页表, Domain 0 页表]
-        core.pagetable_chain = [0x20000, 0x10000]
+        # page_table_chain: [Domain 1 页表, Domain 0 页表]
+        core.page_table_chain = [0x20000, 0x10000]
 
         core.load_assembly("""
             MOV R1, #0x1000
@@ -528,7 +528,7 @@ class TestMultiLevelTranslation:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.pagetable_chain = [0x20000, 0x10000]
+        core.page_table_chain = [0x20000, 0x10000]
 
         core.load_assembly("""
             MOV R1, #0x1000
@@ -572,7 +572,7 @@ class TestPermissionChecking:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.pagetable_chain = [0x10000]
+        core.page_table_chain = [0x10000]
 
         core.load_assembly("""
             MOV R1, #0x1000
@@ -607,7 +607,7 @@ class TestPermissionChecking:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.pagetable_chain = [0x10000]
+        core.page_table_chain = [0x10000]
 
         core.load_assembly("""
             MOV R0, #0xCAFEBABE
@@ -643,7 +643,7 @@ class TestPermissionChecking:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.pagetable_chain = [0x10000]
+        core.page_table_chain = [0x10000]
 
         core.load_assembly("""
             MOV R0, #0xCAFEBABE
@@ -681,7 +681,7 @@ class TestPermissionChecking:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.pagetable_chain = [0x10000]
+        core.page_table_chain = [0x10000]
 
         core.load_assembly("""
             MOV R1, #0x1000
@@ -716,7 +716,7 @@ class TestPermissionChecking:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.pagetable_chain = [0x10000]
+        core.page_table_chain = [0x10000]
 
         core.load_assembly("""
             MOV R0, #0xCAFEBABE
@@ -932,7 +932,7 @@ class TestIPABoundsChecking:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.pagetable_chain = [0x10000]
+        core.page_table_chain = [0x10000]
         core.ipa_regions = ipa_regions
 
         core.load_assembly("""
@@ -973,7 +973,7 @@ class TestIPABoundsChecking:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.pagetable_chain = [0x10000]
+        core.page_table_chain = [0x10000]
         core.ipa_regions = ipa_regions
 
         core.load_assembly("""
@@ -1016,7 +1016,7 @@ class TestIPABoundsChecking:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.pagetable_chain = [0x10000]
+        core.page_table_chain = [0x10000]
         core.ipa_regions = 0  # 无边界检查
 
         core.load_assembly("""
@@ -1062,7 +1062,7 @@ class TestIPABoundsChecking:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        core.pagetable_chain = [0x10000]
+        core.page_table_chain = [0x10000]
         core.ipa_regions = ipa_regions
 
         core.load_assembly("""
@@ -1088,7 +1088,7 @@ class TestIPABoundsChecking:
         mm = MemoryManager(physical_memory=mem)
 
         # 不创建页表 - INHERIT 模式（pagetable = 0）
-        # pagetable_chain = [0] 表示跳过翻译
+        # page_table_chain = [0] 表示跳过翻译
 
         # 创建 IPA 区域表：只允许 0x2000-0x5000
         ipa_regions = 0x20000
@@ -1108,8 +1108,8 @@ class TestIPABoundsChecking:
 
         rpa = RPALogic()
         core = SimpleISA(rpa=rpa, memory=mem, memory_manager=mm)
-        # INHERIT 模式：pagetable_chain = [0]
-        core.pagetable_chain = [0]
+        # INHERIT 模式：page_table_chain = [0]
+        core.page_table_chain = [0]
         core.ipa_regions = ipa_regions
 
         # 测试1：访问允许范围内的地址

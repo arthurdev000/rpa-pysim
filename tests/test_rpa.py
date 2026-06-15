@@ -253,7 +253,7 @@ class TestMemoryTranslation:
         mem.write_word(0x2000, 0xDEADBEEF)
 
         # 设置 pagetable_chain
-        core.pagetable_chain = [0x10000]
+        core.page_table_chain = [0x10000]
 
         core.load_assembly("""
             MOV R1, #0x1000
@@ -278,7 +278,7 @@ class TestMemoryTranslation:
         pt.map(0x1000, 0x2000)
 
         # 设置 pagetable_chain
-        core.pagetable_chain = [0x10000]
+        core.page_table_chain = [0x10000]
 
         core.load_assembly("""
             MOV R0, #0xDEADBEEF
